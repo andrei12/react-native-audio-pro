@@ -19,6 +19,7 @@ export type AudioProTrack = {
 	artwork: AudioProArtwork;
 	album?: string;
 	artist?: string;
+	isLive?: boolean;
 	[key: string]: unknown; // custom properties
 };
 
