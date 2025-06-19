@@ -1012,16 +1012,22 @@ class AudioPro: RCTEventEmitter {
 			if let isLive = trackInfo["isLive"] as? Bool {
 				if isLive {
 					nowPlayingInfo["MPNowPlayingInfoPropertyIsLiveStream"] = true
-					
+
 					// Remove duration/progress properties for live streams
 					nowPlayingInfo.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
 					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyElapsedPlaybackTime)
 					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackProgress)
-					
+
 					// Force update the now playing info center
 					MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-		
+
+				} else {
+					// Remove the live stream indicator if present
+					nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
 				}
+			} else {
+				// Remove the live stream indicator if present
+				nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
 			}
 		}
 
