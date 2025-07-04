@@ -22,6 +22,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.guava.await
+import android.os.Bundle
 
 object AudioProController {
 	private var reactContext: ReactApplicationContext? = null
@@ -96,7 +97,7 @@ object AudioProController {
 		val showNextPrevControls: Boolean
 	)
 
-	// Extracts and applies play options from JS before playback
+	// Override extractPlaybackOptions to always set showNextPrevControls to false
 	private fun extractPlaybackOptions(options: ReadableMap): PlaybackOptions {
 		val contentType = if (options.hasKey("contentType")) {
 			options.getString("contentType") ?: "MUSIC"
@@ -108,21 +109,13 @@ object AudioProController {
 			.toFloat() else 1.0f
 		val volume = if (options.hasKey("volume")) options.getDouble("volume").toFloat() else 1.0f
 		val autoPlay = if (options.hasKey("autoPlay")) options.getBoolean("autoPlay") else true
-		val startTimeMs =
-			if (options.hasKey("startTimeMs")) options.getDouble("startTimeMs").toLong() else null
+		val startTimeMs = null // Always null for radio streams
 		val progressInterval =
 			if (options.hasKey("progressIntervalMs")) options.getDouble("progressIntervalMs")
 				.toLong() else 1000L
-		val showControls =
-			if (options.hasKey("showNextPrevControls")) options.getBoolean("showNextPrevControls") else true
 
-		// Warn if showNextPrevControls is changed after session initialization
-		if (::engineBrowserFuture.isInitialized && enginerBrowser != null && showControls != settingShowNextPrevControls) {
-			Log.w(
-				"[react-native-audio-pro]",
-				"showNextPrevControls changed mid-session; call clear() before changing."
-			)
-		}
+		// Always set showNextPrevControls to false for radio streaming
+		val showControls = false
 
 		// Apply to controller state
 		settingDebug = enableDebug
@@ -131,10 +124,10 @@ object AudioProController {
 			"SPEECH" -> C.AUDIO_CONTENT_TYPE_SPEECH
 			else -> C.AUDIO_CONTENT_TYPE_MUSIC
 		}
-		activePlaybackSpeed = speed
+		activePlaybackSpeed = 1.0f // Always use normal speed for radio
 		activeVolume = volume
 		settingProgressIntervalMs = progressInterval
-		settingShowNextPrevControls = showControls
+		settingShowNextPrevControls = false // Always false for radio
 
 		return PlaybackOptions(
 			contentType, enableDebug, includeProgressInDebug,
@@ -170,10 +163,9 @@ object AudioProController {
 		ensurePreparedForNewPlayback()
 		activeTrack = track
 
-		// If startTimeMs is provided and autoPlay is true, set pendingSeekPosition
-		if (opts.startTimeMs != null && opts.autoPlay) {
-			flowPendingSeekPosition = opts.startTimeMs
-		}
+		// Always treat streams as live for radio
+		// Always clear any pending seek position for live streams
+		flowPendingSeekPosition = null
 
 		log("Configured with contentType=${opts.contentType} debug=${opts.enableDebug} speed=${opts.speed} volume=${opts.volume} autoPlay=${opts.autoPlay}")
 
@@ -191,6 +183,14 @@ object AudioProController {
 			.setTitle(title)
 			.setArtist(artist)
 			.setAlbumTitle(album)
+			// Set isLive flag in metadata for MediaSession
+			.setIsBrowsable(false)
+			.setIsPlayable(true)
+
+		// Set live flag using the extras bundle
+		val extras = Bundle()
+		extras.putBoolean("android.media.metadata.IS_LIVE", true)
+		metadataBuilder.setExtras(extras)
 
 		if (artwork != null) {
 			metadataBuilder.setArtworkUri(artwork)
@@ -212,11 +212,19 @@ object AudioProController {
 		val uri = url.toUri()
 		log("Parsed URI: $uri, scheme: ${uri.scheme}")
 
-		val mediaItem = MediaItem.Builder()
+		val mediaItemBuilder = MediaItem.Builder()
 			.setUri(uri)
 			.setMediaId("custom_track_1")
 			.setMediaMetadata(metadataBuilder.build())
-			.build()
+
+		// Always set the appropriate media flags for live streams
+		mediaItemBuilder.setLiveConfiguration(
+			MediaItem.LiveConfiguration.Builder()
+				.setMaxPlaybackSpeed(1.0f) // Restrict speed for live content
+				.build()
+		)
+
+		val mediaItem = mediaItemBuilder.build()
 
 		runOnUiThread {
 			log("Play", title, url)
@@ -227,8 +235,9 @@ object AudioProController {
 				it.setMediaItem(mediaItem)
 				it.prepare()
 
-				// Set playback speed regardless of autoPlay
-				it.setPlaybackSpeed(opts.speed)
+				// Always use normal speed for live streams
+				it.setPlaybackSpeed(1.0f)
+
 				// Set volume regardless of autoPlay
 				it.setVolume(opts.volume)
 
@@ -406,48 +415,31 @@ object AudioProController {
 	}
 
 
-	fun seekTo(position: Long) {
-		ensureSession()
-		runOnUiThread {
-			val dur = enginerBrowser?.duration ?: 0L
-			val validPosition = when {
-				position < 0 -> 0L
-				position > dur -> dur
-				else -> position
-			}
-
-			// Set pending seek position
-			flowPendingSeekPosition = validPosition
-
-			// Stop progress timer during seek
-			stopProgressTimer()
-
-			log("Seeking to position: $validPosition")
-			enginerBrowser?.seekTo(validPosition)
-
-			// SEEK_COMPLETE will be emitted in onPositionDiscontinuity
-		}
+	/**
+	 * Seek to a specific position in the current track
+	 * For radio streams, this is disabled
+	 */
+	fun seekTo(positionMs: Long) {
+		log("seekTo() ignored for radio stream")
+		// Do nothing for radio streams
 	}
 
-	fun seekForward(amount: Long) {
-		runOnUiThread {
-			val current = enginerBrowser?.currentPosition ?: 0L
-			val dur = enginerBrowser?.duration ?: 0L
-			val newPos = (current + amount).coerceAtMost(dur)
-
-			log("Seeking forward to position: $newPos")
-			seekTo(newPos)
-		}
+	/**
+	 * Seek forward by the specified amount
+	 * For radio streams, this is disabled
+	 */
+	fun seekForward(amountMs: Long) {
+		log("seekForward() ignored for radio stream")
+		// Do nothing for radio streams
 	}
 
-	fun seekBack(amount: Long) {
-		runOnUiThread {
-			val current = enginerBrowser?.currentPosition ?: 0L
-			val newPos = (current - amount).coerceAtLeast(0L)
-
-			log("Seeking back to position: $newPos")
-			seekTo(newPos)
-		}
+	/**
+	 * Seek backward by the specified amount
+	 * For radio streams, this is disabled
+	 */
+	fun seekBack(amountMs: Long) {
+		log("seekBack() ignored for radio stream")
+		// Do nothing for radio streams
 	}
 
 	fun detachPlayerListener() {

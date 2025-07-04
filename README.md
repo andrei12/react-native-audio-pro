@@ -58,7 +58,9 @@ React Native Audio Pro also includes a few optional capabilities that support mo
 ```bash
 npm install react-native-audio-pro
 ```
+
 or
+
 ```bash
 yarn add react-native-audio-pro
 ```
@@ -66,6 +68,7 @@ yarn add react-native-audio-pro
 ### 🍎 iOS Installation
 
 Install the CocoaPods dependencies:
+
 ```bash
 npx pod-install
 ```
@@ -106,13 +109,13 @@ buildscript {
 2. **For iOS, enable Background Modes in your `app.json`:**
     ```json
     {
-      "expo": {
-        "ios": {
-          "infoPlist": {
-            "UIBackgroundModes": ["audio"]
-          }
-        }
-      }
+    	"expo": {
+    		"ios": {
+    			"infoPlist": {
+    				"UIBackgroundModes": ["audio"]
+    			}
+    		}
+    	}
     }
     ```
 3. **For Android, update your plugins array in `app.json`:**
@@ -139,7 +142,7 @@ React Native Audio Pro supports various audio formats including MP3, AAC, WAV, a
 ### 🛠 Methods
 
 | Method                                                        | Description                                                                                | Return Value                             |
-|---------------------------------------------------------------|--------------------------------------------------------------------------------------------|------------------------------------------|
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------- | --- | --------------------- |
 | **play(track: AudioProTrack, options?: AudioProPlayOptions)** | Loads and starts playing the specified track.                                              | `void`                                   |
 | **pause()**                                                   | Pauses the current playback.                                                               | `void`                                   |
 | **resume()**                                                  | Resumes playback if paused.                                                                | `void`                                   |
@@ -158,7 +161,7 @@ React Native Audio Pro supports various audio formats including MP3, AAC, WAV, a
 | **getPlaybackSpeed()**                                        | Returns the current playback speed rate.                                                   | `number`                                 |
 | **setVolume(volume: number)**                                 | Sets the playback volume from (0.0 to 1.0). Does not affect the system volume.             | `void`                                   |
 | **getVolume()**                                               | Returns the current relative volume (0.0 to 1.0).                                          | `number`                                 |
-| **getError()**                                                | Returns the last error that occurred, or null if no error has occurred.                    | `AudioProPlaybackErrorPayload \| null`   |                                                                                   | `EmitterSubscription` |
+| **getError()**                                                | Returns the last error that occurred, or null if no error has occurred.                    | `AudioProPlaybackErrorPayload \| null`   |     | `EmitterSubscription` |
 
 ### ⚡️ React Hook
 
@@ -169,7 +172,7 @@ const { state, position, duration, playingTrack, playbackSpeed, volume, error } 
 ```
 
 | Value             | Description                                                    | Type                                   |
-|-------------------|----------------------------------------------------------------|----------------------------------------|
+| ----------------- | -------------------------------------------------------------- | -------------------------------------- |
 | **state**         | Current playback state of the audio player.                    | `AudioProState`                        |
 | **position**      | Current playback position in milliseconds.                     | `number`                               |
 | **duration**      | Total duration of the current track in milliseconds.           | `number`                               |
@@ -181,7 +184,7 @@ const { state, position, duration, playingTrack, playbackSpeed, volume, error } 
 ### 🎧 Event Listeners
 
 | Method                                                | Description                                                                       | Return Value                                                                    |
-|-------------------------------------------------------|-----------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
+| ----------------------------------------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | **addEventListener(callback: AudioProEventCallback)** | Listens for playback events (e.g., state changes, track ended, errors, progress). | `EmitterSubscription` - A subscription that can be used to remove the listener. |
 
 ### 🧱 Enums
@@ -189,7 +192,7 @@ const { state, position, duration, playingTrack, playbackSpeed, volume, error } 
 #### AudioProState
 
 | State     | Description                                                                                                          |
-|-----------|----------------------------------------------------------------------------------------------------------------------|
+| --------- | -------------------------------------------------------------------------------------------------------------------- |
 | `IDLE`    | The default state on app launch. Represents a player with no loaded track and fully cleared media sessions.          |
 | `STOPPED` | Playback is stopped but the track remains loaded. Position is reset to 0, and media session controls remain visible. |
 | `LOADING` | A track is being loaded or buffered and is not yet ready for playback.                                               |
@@ -199,28 +202,28 @@ const { state, position, duration, playingTrack, playbackSpeed, volume, error } 
 
 #### AudioProEventType
 
-| Event                    | Description                                                                               |
-|--------------------------|-------------------------------------------------------------------------------------------|
-| `STATE_CHANGED`          | Emitted when the player's state changes (e.g., from LOADING to PLAYING).                  |
-| `PROGRESS`               | Emitted approximately once per second during playback with current position and duration. |
-| `TRACK_ENDED`            | Emitted when a track completes playback naturally.                                        |
+| Event                    | Description                                                                                   |
+| ------------------------ | --------------------------------------------------------------------------------------------- |
+| `STATE_CHANGED`          | Emitted when the player's state changes (e.g., from LOADING to PLAYING).                      |
+| `PROGRESS`               | Emitted approximately once per second during playback with current position and duration.     |
+| `TRACK_ENDED`            | Emitted when a track completes playback naturally.                                            |
 | `SEEK_COMPLETE`          | Emitted when a seek operation completes. Payload includes `triggeredBy` (`USER` or `SYSTEM`). |
-| `PLAYBACK_SPEED_CHANGED` | Emitted when the playback speed is changed.                                               |
-| `REMOTE_NEXT`            | Emitted when the user presses the "Next" button on lock screen controls.                  |
-| `REMOTE_PREV`            | Emitted when the user presses the "Previous" button on lock screen controls.              |
-| `PLAYBACK_ERROR`         | Emitted when a playback error occurs.                                                     |
+| `PLAYBACK_SPEED_CHANGED` | Emitted when the playback speed is changed.                                                   |
+| `REMOTE_NEXT`            | Emitted when the user presses the "Next" button on lock screen controls.                      |
+| `REMOTE_PREV`            | Emitted when the user presses the "Previous" button on lock screen controls.                  |
+| `PLAYBACK_ERROR`         | Emitted when a playback error occurs.                                                         |
 
 #### AudioProAmbientEventType
 
 | Event                 | Description                                                                                 |
-|-----------------------|---------------------------------------------------------------------------------------------|
+| --------------------- | ------------------------------------------------------------------------------------------- |
 | `AMBIENT_TRACK_ENDED` | Emitted when an ambient track completes playback naturally (when `loop` is set to `false`). |
 | `AMBIENT_ERROR`       | Emitted when an error occurs during ambient audio playback.                                 |
 
 #### AudioProContentType
 
 | Type     | Description                                                                                    |
-|----------|------------------------------------------------------------------------------------------------|
+| -------- | ---------------------------------------------------------------------------------------------- |
 | `MUSIC`  | Optimized for music playback. Use for songs or music-heavy audio content. This is the default. |
 | `SPEECH` | Optimized for spoken word content. Use for podcasts, audiobooks, or speech-heavy content.      |
 
@@ -232,8 +235,8 @@ You can hide the next/previous buttons on the lock screen by setting `showNextPr
 
 ```typescript
 AudioPro.configure({
-  contentType: AudioProContentType.MUSIC,
-  showNextPrevControls: false, // Hide next/previous buttons on lock screen
+	contentType: AudioProContentType.MUSIC,
+	showNextPrevControls: false, // Hide next/previous buttons on lock screen
 });
 ```
 
@@ -241,15 +244,15 @@ AudioPro.configure({
 
 > 🧠 Ambient playback is designed to be stateless, simple, and minimal for background sounds, ambient loops, or lightweight audio tasks.
 
-| Method                                                         | Description                                                                                                                                           | Return Value          |
-|----------------------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|-----------------------|
-| **ambientPlay(options: AmbientAudioPlayOptions)**              | Plays a lightweight ambient audio track, isolated from the main player. Accepts a remote or local `url` and optional `loop` flag (default: `true`).   | `void`                |
-| **ambientStop()**                                              | Stops the ambient audio playback.                                                                                                                     | `void`                |
-| **ambientPause()**                                             | Pause ambient audio playback (no-op if already paused or not playing).                                                                                | `void`                |
-| **ambientResume()**                                            | Resume ambient audio playback if paused (no-op if already playing or no active track).                                                                | `void`                |
-| **ambientSeekTo(positionMs: number)**                          | Seek to the specified position (in milliseconds) in the ambient track (if supported). Silently ignore if not supported or if no active ambient track. | `void`                |
-| **ambientSetVolume(volume: number)**                           | Sets the volume of ambient audio playback from 0.0 (mute) to 1.0 (full output).                                                                       | `void`                |
-| **addAmbientListener(callback: AudioProAmbientEventCallback)** | Listens for ambient audio events (e.g., track ended, errors).
+| Method                                                         | Description                                                                                                                                           | Return Value |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| **ambientPlay(options: AmbientAudioPlayOptions)**              | Plays a lightweight ambient audio track, isolated from the main player. Accepts a remote or local `url` and optional `loop` flag (default: `true`).   | `void`       |
+| **ambientStop()**                                              | Stops the ambient audio playback.                                                                                                                     | `void`       |
+| **ambientPause()**                                             | Pause ambient audio playback (no-op if already paused or not playing).                                                                                | `void`       |
+| **ambientResume()**                                            | Resume ambient audio playback if paused (no-op if already playing or no active track).                                                                | `void`       |
+| **ambientSeekTo(positionMs: number)**                          | Seek to the specified position (in milliseconds) in the ambient track (if supported). Silently ignore if not supported or if no active ambient track. | `void`       |
+| **ambientSetVolume(volume: number)**                           | Sets the volume of ambient audio playback from 0.0 (mute) to 1.0 (full output).                                                                       | `void`       |
+| **addAmbientListener(callback: AudioProAmbientEventCallback)** | Listens for ambient audio events (e.g., track ended, errors).                                                                                         |
 
 ### 🧩 Types
 
@@ -258,28 +261,29 @@ AudioPro.configure({
 
 ```typescript
 type AudioProTrack = {
-    id: string;
-    url: string; // the media url (mp3, m4a, streaming URLs) - http://, https://, or file://
-    title: string;
-    artwork: string; // the image url (jpg, png) - http://, https://, or file://
-    album?: string;
-    artist?: string;
+	id: string;
+	url: string; // the media url (mp3, m4a, streaming URLs) - http://, https://, or file://
+	title: string;
+	artwork: string; // the image url (jpg, png) - http://, https://, or file://
+	album?: string;
+	artist?: string;
 };
 
 type AudioProSetupOptions = {
-    contentType?: AudioProContentType; // MUSIC or SPEECH
-    debug?: boolean; // Verbose logging
-    debugIncludesProgress?: boolean; // Whether to include progress events in debug logs (default: false)
-    progressIntervalMs?: number; // Frequency (in ms) at which PROGRESS events are emitted (default: 1000ms)
-    showNextPrevControls?: boolean; // Whether to show next/previous buttons on lock screen (default: true)
+	contentType?: AudioProContentType; // MUSIC or SPEECH
+	debug?: boolean; // Verbose logging
+	debugIncludesProgress?: boolean; // Whether to include progress events in debug logs (default: false)
+	progressIntervalMs?: number; // Frequency (in ms) at which PROGRESS events are emitted (default: 1000ms)
+	showNextPrevControls?: boolean; // Whether to show next/previous buttons on lock screen (default: true)
 };
 
 type AudioProPlayOptions = {
-    autoPlay?: boolean; // Whether to start playback immediately (default: true)
-    headers?: AudioProHeaders; // Custom HTTP headers for audio and artwork requests
-    startTimeMs?: number; // Optional position in milliseconds to start playback from. Ignored if autoPlay is false.
+	autoPlay?: boolean; // Whether to start playback immediately (default: true)
+	headers?: AudioProHeaders; // Custom HTTP headers for audio and artwork requests
+	startTimeMs?: number; // Optional position in milliseconds to start playback from. Ignored if autoPlay is false.
 };
 ```
+
 </details>
 
 <details>
@@ -288,16 +292,16 @@ type AudioProPlayOptions = {
 ```typescript
 // Unified event structure
 interface AudioProEvent {
-    type: AudioProEventType;
-    track: AudioProTrack | null; // Required for all events except REMOTE_NEXT and REMOTE_PREV
-    payload?: {
-        state?: AudioProState;
-        position?: number;
-        duration?: number;
-        error?: string;
-        errorCode?: number;
-        speed?: number;
-    };
+	type: AudioProEventType;
+	track: AudioProTrack | null; // Required for all events except REMOTE_NEXT and REMOTE_PREV
+	payload?: {
+		state?: AudioProState;
+		position?: number;
+		duration?: number;
+		error?: string;
+		errorCode?: number;
+		speed?: number;
+	};
 }
 
 // Note: Command events (REMOTE_NEXT, REMOTE_PREV) don't update state and don't require track information.
@@ -305,45 +309,47 @@ interface AudioProEvent {
 
 // Event payload examples
 interface AudioProStateChangedPayload {
-    state: AudioProState;
-    position: number;
-    duration: number;
+	state: AudioProState;
+	position: number;
+	duration: number;
 }
 
 interface AudioProTrackEndedPayload {
-    position: number;
-    duration: number;
+	position: number;
+	duration: number;
 }
 
 interface AudioProPlaybackErrorPayload {
-    error: string;
-    errorCode?: number;
+	error: string;
+	errorCode?: number;
 }
 
 interface AudioProPlaybackSpeedChangedPayload {
-    speed: number;
+	speed: number;
 }
 
 // Ambient audio event structure
 interface AudioProAmbientEvent {
-    type: AudioProAmbientEventType;
-    payload?: {
-        error?: string;
-    };
+	type: AudioProAmbientEventType;
+	payload?: {
+		error?: string;
+	};
 }
 
 // Ambient audio play options
 interface AmbientAudioPlayOptions {
-    url: string; // Remote URL (http://, https://) or file:// URL
-    loop?: boolean; // Default: true
+	url: string; // Remote URL (http://, https://) or file:// URL
+	loop?: boolean; // Default: true
 }
 ```
+
 </details>
 
 <details>
 <summary><b>About contentType</b></summary>
 
 Use `AudioProContentType.SPEECH` for podcasts or audiobooks, `AudioProContentType.MUSIC` for songs or music-heavy audio. This optimizes playback behavior like audio focus and routing. Defaults to `AudioProContentType.MUSIC`.
+
 </details>
 
 <details>
@@ -351,7 +357,7 @@ Use `AudioProContentType.SPEECH` for podcasts or audiobooks, `AudioProContentTyp
 
 - `debug`: When set to `true`, enables verbose logging of all audio events. Useful for development and troubleshooting.
 - `debugIncludesProgress`: When set to `true`, includes PROGRESS events in debug logs. PROGRESS events occur every second during playback and can flood the logs, making it harder to see other important events. Defaults to `false`.
-</details>
+    </details>
 
 <details>
 <summary><b>About progressIntervalMs</b></summary>
@@ -362,7 +368,7 @@ Use `AudioProContentType.SPEECH` for podcasts or audiobooks, `AudioProContentTyp
 - Can be set via `configure()` or `setProgressInterval()`
 - Changes take effect on the next call to `play()`
 - Useful for making the UI more responsive for short or high-precision audio playback
-</details>
+    </details>
 
 ### Handling Remote Events
 
@@ -373,24 +379,24 @@ import { AudioPro, AudioProEventType } from 'react-native-audio-pro';
 
 // Set up listeners outside React components (see warning section below)
 const subscription = AudioPro.addEventListener((event) => {
-  switch (event.type) {
-    case AudioProEventType.REMOTE_NEXT:
-      // Handle next track button press
-      console.log('User pressed Next button');
-      // Load and play next track
-      break;
+	switch (event.type) {
+		case AudioProEventType.REMOTE_NEXT:
+			// Handle next track button press
+			console.log('User pressed Next button');
+			// Load and play next track
+			break;
 
-    case AudioProEventType.REMOTE_PREV:
-      // Handle previous track button press
-      console.log('User pressed Previous button');
-      // Load and play previous track
-      break;
+		case AudioProEventType.REMOTE_PREV:
+			// Handle previous track button press
+			console.log('User pressed Previous button');
+			// Load and play previous track
+			break;
 
-    case AudioProEventType.STATE_CHANGED:
-      // Handle state changes
-      console.log('State changed to:', event.payload?.state);
-      break;
-  }
+		case AudioProEventType.STATE_CHANGED:
+			// Handle state changes
+			console.log('State changed to:', event.payload?.state);
+			break;
+	}
 });
 
 // Later, when you want to remove the listener
@@ -441,26 +447,26 @@ import { AudioPro, AudioProContentType } from 'react-native-audio-pro';
 
 // Optional: Set playback config
 AudioPro.configure({
-  contentType: AudioProContentType.MUSIC,
-  debug: __DEV__,
+	contentType: AudioProContentType.MUSIC,
+	debug: __DEV__,
 });
 
 // Define an audio track (supports static remote files, live streams, and file:// URLs)
 const track = {
-  id: 'track-001',
-  url: 'https://example.com/audio.mp3', // Remote file, live stream URL, or file:// URL
-  title: 'My Track',
-  artwork: 'https://example.com/artwork.jpg', // Remote image or file:// URL
-  artist: 'Artist Name',
+	id: 'track-001',
+	url: 'https://example.com/audio.mp3', // Remote file, live stream URL, or file:// URL
+	title: 'My Track',
+	artwork: 'https://example.com/artwork.jpg', // Remote image or file:// URL
+	artist: 'Artist Name',
 };
 
 // For local files, make sure to use the file:// prefix for paths
 const localTrack = {
-  id: 'local-track-001',
-  url: 'file:///data/user/0/com.myapp/cache/audio.mp3',
-  title: 'Local Track',
-  artwork: 'file:///data/user/0/com.myapp/cache/artwork.jpg',
-  artist: 'Local Artist',
+	id: 'local-track-001',
+	url: 'file:///data/user/0/com.myapp/cache/audio.mp3',
+	title: 'Local Track',
+	artwork: 'file:///data/user/0/com.myapp/cache/artwork.jpg',
+	artist: 'Local Artist',
 };
 
 // Load and play the track
@@ -489,7 +495,9 @@ const playingTrack = AudioPro.getPlayingTrack();
 const speed = AudioPro.getPlaybackSpeed();
 const volume = AudioPro.getVolume();
 const error = AudioPro.getError();
-console.log(`Currently playing: ${playingTrack?.title} (${position}/${duration}ms) - State: ${state} - Speed: ${speed}x - Volume: ${Math.round(volume * 100)}%`);
+console.log(
+	`Currently playing: ${playingTrack?.title} (${position}/${duration}ms) - State: ${state} - Speed: ${speed}x - Volume: ${Math.round(volume * 100)}%`,
+);
 ```
 
 ## 🔊 Ambient Audio
@@ -505,14 +513,14 @@ import { AudioPro } from 'react-native-audio-pro';
 
 // Play ambient audio
 AudioPro.ambientPlay({
-  url: 'https://example.com/ambient.mp3', // Remote URL or file:// URL
-  loop: true, // Optional, defaults to true
+	url: 'https://example.com/ambient.mp3', // Remote URL or file:// URL
+	loop: true, // Optional, defaults to true
 });
 
 // Basic ambient audio controls
-AudioPro.ambientPause();    // Pause ambient playback
-AudioPro.ambientResume();   // Resume ambient playback
-AudioPro.ambientStop();     // Stop and clean up ambient playback
+AudioPro.ambientPause(); // Pause ambient playback
+AudioPro.ambientResume(); // Resume ambient playback
+AudioPro.ambientStop(); // Stop and clean up ambient playback
 AudioPro.ambientSeekTo(30000); // Seek to 30 seconds
 
 // Set ambient audio volume
@@ -520,14 +528,14 @@ AudioPro.ambientSetVolume(0.5); // 50% volume
 
 // Listen for ambient audio events
 const subscription = AudioPro.addAmbientListener((event) => {
-  switch (event.type) {
-    case 'AMBIENT_TRACK_ENDED':
-      console.log('Ambient track ended');
-      break;
-    case 'AMBIENT_ERROR':
-      console.error('Ambient error:', event.payload?.error);
-      break;
-  }
+	switch (event.type) {
+		case 'AMBIENT_TRACK_ENDED':
+			console.log('Ambient track ended');
+			break;
+		case 'AMBIENT_ERROR':
+			console.error('Ambient error:', event.payload?.error);
+			break;
+	}
 });
 
 // Later, remove the listener
@@ -568,36 +576,38 @@ setupAudio();
 import { AudioPro, AudioProEventType, AudioProContentType } from 'react-native-audio-pro';
 
 export function setupAudio() {
-  // Configure audio settings
-  AudioPro.configure({
-    contentType: AudioProContentType.MUSIC,
-    debug: __DEV__,
-    debugIncludesProgress: false,
-    progressIntervalMs: 1000,
-    showNextPrevControls: true, // Show next/previous buttons on lock screen (default)
-  });
+	// Configure audio settings
+	AudioPro.configure({
+		contentType: AudioProContentType.MUSIC,
+		debug: __DEV__,
+		debugIncludesProgress: false,
+		progressIntervalMs: 1000,
+		showNextPrevControls: true, // Show next/previous buttons on lock screen (default)
+	});
 
-  // Set up event listeners that persist for the app's lifetime
-  AudioPro.addEventListener((event) => {
-    switch (event.type) {
-      case AudioProEventType.TRACK_ENDED:
-        // Auto-play next track when current track ends
-        const nextTrack = determineNextTrack();
-        if (nextTrack) {
-          AudioPro.play(nextTrack);
-        }
-        break;
+	// Set up event listeners that persist for the app's lifetime
+	AudioPro.addEventListener((event) => {
+		switch (event.type) {
+			case AudioProEventType.TRACK_ENDED:
+				// Auto-play next track when current track ends
+				const nextTrack = determineNextTrack();
+				if (nextTrack) {
+					AudioPro.play(nextTrack);
+				}
+				break;
 
-      case AudioProEventType.REMOTE_NEXT:
-        // Handle next button press from lock screen/notification
-        const nextTrackFromRemote = determineNextTrack();
-        AudioPro.play(nextTrackFromRemote);
-        break;
-    }
-  });
+			case AudioProEventType.REMOTE_NEXT:
+				// Handle next button press from lock screen/notification
+				const nextTrackFromRemote = determineNextTrack();
+				AudioPro.play(nextTrackFromRemote);
+				break;
+		}
+	});
 }
 
-function determineNextTrack() { /* Your logic here */ }
+function determineNextTrack() {
+	/* Your logic here */
+}
 ```
 
 ## 📱 Example App
@@ -613,12 +623,13 @@ It demonstrates how to use `react-native-audio-pro` in a real React Native app, 
 
 ### To run the example:
 
-* Clone this repo and run the below commands
+- Clone this repo and run the below commands
 
 ```bash
 yarn install
 yarn example start
 ```
+
 And in a new terminal window/pane:
 
 ```bash

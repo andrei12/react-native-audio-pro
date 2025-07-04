@@ -4,6 +4,7 @@ import { name as appName } from './app.json';
 import App from './src/App';
 import { setupAudioPro } from './src/player-service';
 
-AppRegistry.registerComponent(appName, () => App);
-
+// Initialize the radio player
 setupAudioPro();
+
+AppRegistry.registerComponent(appName, () => App);

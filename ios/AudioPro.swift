@@ -281,232 +281,46 @@ class AudioPro: RCTEventEmitter {
 		let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
 		let volume = Float(options["volume"] as? Double ?? 1.0)
 		let autoPlay = options["autoPlay"] as? Bool ?? true
-		settingShowNextPrevControls = options["showNextPrevControls"] as? Bool ?? true
-		pendingStartTimeMs = options["startTimeMs"] as? Double
-
-		if let progressIntervalMs = options["progressIntervalMs"] as? Double {
-			let intervalSeconds = progressIntervalMs / 1000.0
-			settingProgressInterval = intervalSeconds
-		} else {
-			settingProgressInterval = 1.0
-		}
-
-		currentPlaybackSpeed = speed
-		activeVolume = volume
-		log("Play", track["title"] ?? "Unknown", "speed:", speed, "volume:", volume, "autoPlay:", autoPlay)
-
-		if player != nil {
-			DispatchQueue.main.sync {
-				// Prepare for new playback without emitting state changes or destroying the media session
-				prepareForNewPlayback()
-			}
-		}
-
-		guard
-			let urlString = track["url"] as? String,
-			let url = URL(string: urlString),
-			let title = track["title"] as? String,
-			let artworkUrlString = track["artwork"] as? String,
-			let artworkUrl = URL(string: artworkUrlString)
-		else {
-			onError("Invalid track data")
-			cleanup()
+		let contentType = options["contentType"] as? String ?? ""
+		
+		// Get URL from track
+		guard let urlString = track["url"] as? String, let url = URL(string: urlString) else {
+			onError("Invalid URL provided")
 			return
 		}
-
-		do {
-			let contentType = options["contentType"] as? String ?? "MUSIC"
-			let mode: AVAudioSession.Mode = (contentType == "SPEECH") ? .spokenAudio : .default
-			try AVAudioSession.sharedInstance().setCategory(.playback, mode: mode)
-			try AVAudioSession.sharedInstance().setActive(true)
-
-			// Set up audio session interruption observer
-			setupAudioSessionInterruptionObserver()
-		} catch {
-			onError("Audio session setup failed: \(error.localizedDescription)")
-			return
-		}
-
-		sendStateEvent(state: STATE_LOADING, position: 0, duration: 0, track: currentTrack)
-		shouldBePlaying = autoPlay
-
-		let album = track["album"] as? String
-		let artist = track["artist"] as? String
-
-		// Update now playing info without resetting the entire dictionary
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-		nowPlayingInfo[MPMediaItemPropertyTitle] = title
-		if let album = album {
-			nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
-		}
-		if let artist = artist {
-			nowPlayingInfo[MPMediaItemPropertyArtist] = artist
-		}
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-
-		// Set up remote transport controls only if they haven't been set up yet
-		DispatchQueue.main.async {
-			if !self.isRemoteCommandCenterSetup {
-				UIApplication.shared.beginReceivingRemoteControlEvents()
-				self.setupRemoteTransportControls()
-			}
-		}
-
-		// Create new player item with custom headers if provided
-		let item: AVPlayerItem
-
-		// Check if audio headers are provided
-		if let headers = options["headers"] as? NSDictionary, let audioHeaders = headers["audio"] as? NSDictionary {
-			// Convert headers to Swift dictionary
-			var headerFields = [String: String]()
-			for (key, value) in audioHeaders {
-				if let headerField = key as? String, let headerValue = value as? String {
-					headerFields[headerField] = headerValue
-				}
-			}
-
-			// Create an AVAsset with the headers
-			let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headerFields])
-			item = AVPlayerItem(asset: asset)
-		} else {
-			// No headers, use simple URL initialization
-			item = AVPlayerItem(url: url)
-		}
-
-		// Add observer to the new item
-		item.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
-		isStatusObserverAdded = true
-
-		// Create the AVPlayer if it doesn't exist, otherwise just replace the item
-		if player == nil {
-			// Create a new AVPlayer instance
-			player = AVPlayer(playerItem: item)
-		} else {
-			// Replace the current item with the new one
-			player?.replaceCurrentItem(with: item)
-		}
-
-		// Add rate observer to the player
-		player?.addObserver(self, forKeyPath: "rate", options: [.new], context: nil)
-		isRateObserverAdded = true
-
-		// Set up volume to ensure it's applied before playback starts
-		player?.volume = activeVolume
-
-		nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
-		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
-		nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = item.asset.duration.seconds
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-
-		// Add notification observer for track completion to the new item
-		NotificationCenter.default.addObserver(
-			self,
-			selector: #selector(playerItemDidPlayToEndTime(_:)),
-			name: .AVPlayerItemDidPlayToEndTime,
-			object: item
-		)
-
-		// Set up playback speed
-		if currentPlaybackSpeed != 1.0 {
-			player?.rate = currentPlaybackSpeed
-
-			var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-			currentInfo[MPNowPlayingInfoPropertyPlaybackRate] = Double(currentPlaybackSpeed)
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
-		}
-
+		
+		// Clean up previous player if it exists
+		prepareForNewPlayback()
+		
+		// Create player item with URL
+		let headers = options["headers"] as? NSDictionary
+		let playerItem = createPlayerItem(with: url, headers: headers)
+		
+		// Create player with the item
+		player = AVPlayer(playerItem: playerItem)
+		player?.volume = volume
+		
+		// Always use normal playback speed for live streams
+		player?.rate = 1.0
+		currentPlaybackSpeed = 1.0
+		
+		// Setup observers for the player item
+		setupPlayerItemObservers(playerItem)
+		
+		// Update the remote command center
+		setupRemoteTransportControls()
+		
+		// Update the now playing info
+		updateNowPlayingInfo(time: 0, rate: autoPlay ? 1.0 : 0.0)
+		
+		// Start playback if autoPlay is true
 		if autoPlay {
 			player?.play()
-			updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: player?.rate ?? 1.0)
+			shouldBePlaying = true
+			sendStateEvent(state: STATE_LOADING, position: 0, duration: 0)
 		} else {
-			DispatchQueue.main.async {
-				self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0, track: self.currentTrack)
-			}
-		}
-
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-			// Don't emit PLAYING state if we're in an error state
-			if self.isInErrorState {
-				self.log("Ignoring delayed PLAYING state after ERROR")
-				return
-			}
-
-			if self.player?.rate != 0 && self.hasListeners {
-				// Use sendPlayingStateEvent to ensure lastEmittedState is updated
-				self.sendPlayingStateEvent()
-				self.startProgressTimer()
-			}
-		}
-
-		// Fetch artwork asynchronously and update Now Playing info
-		DispatchQueue.global().async {
-			do {
-				// Check if artwork headers are provided
-				if let headers = options["headers"] as? NSDictionary, let artworkHeaders = headers["artwork"] as? NSDictionary {
-					// Create a simple URL request with headers
-					var request = URLRequest(url: artworkUrl)
-					for (key, value) in artworkHeaders {
-						if let headerField = key as? String, let headerValue = value as? String {
-							request.setValue(headerValue, forHTTPHeaderField: headerField)
-						}
-					}
-
-					// Use a semaphore to make the async call synchronous in this background thread
-					let semaphore = DispatchSemaphore(value: 0)
-					var imageData: Data? = nil
-					var requestError: Error? = nil
-
-					URLSession.shared.dataTask(with: request) { (data, response, error) in
-						imageData = data
-						requestError = error
-						semaphore.signal()
-					}.resume()
-
-					// Wait for the request to complete
-					semaphore.wait()
-
-					if let error = requestError {
-						throw error
-					}
-
-					guard let data = imageData else {
-						throw NSError(domain: "AudioPro", code: 0, userInfo: [NSLocalizedDescriptionKey: "No image data received"])
-					}
-
-					guard let image = UIImage(data: data) else {
-						throw NSError(domain: "AudioPro", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid image data"])
-					}
-
-					let mpmArtwork = MPMediaItemArtwork(boundsSize: image.size, requestHandler: { _ in image })
-					DispatchQueue.main.async {
-						var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-						currentInfo[MPMediaItemPropertyArtwork] = mpmArtwork
-						// Always set live stream indicator for live audio streams
-						currentInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-						MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
-					}
-				} else {
-					// No headers, use simple Data initialization
-					let data = try Data(contentsOf: artworkUrl)
-					guard let image = UIImage(data: data) else {
-						throw NSError(domain: "AudioPro", code: 0, userInfo: [NSLocalizedDescriptionKey: "Invalid image data"])
-					}
-					let mpmArtwork = MPMediaItemArtwork(boundsSize: image.size, requestHandler: { _ in image })
-					DispatchQueue.main.async {
-						var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-						currentInfo[MPMediaItemPropertyArtwork] = mpmArtwork
-						// Always set live stream indicator for live audio streams
-						currentInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-						MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
-					}
-				}
-			} catch {
-				DispatchQueue.main.async {
-					self.onError(error.localizedDescription)
-					self.cleanup()
-				}
-			}
+			shouldBePlaying = false
+			sendStateEvent(state: STATE_PAUSED, position: 0, duration: 0)
 		}
 	}
 
@@ -731,18 +545,21 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	@objc(seekTo:)
-	func seekTo(position: Double) {
-		performSeek(to: position, isAbsolute: true)
+	func seekTo(positionMs: Double) {
+		// Seeking is disabled for radio streams
+		log("seekTo() ignored for radio stream")
 	}
 
 	@objc(seekForward:)
-	func seekForward(amount: Double) {
-		performSeek(to: amount, isAbsolute: false)
+	func seekForward(offsetMs: Double) {
+		// Seeking is disabled for radio streams
+		log("seekForward() ignored for radio stream")
 	}
 
 	@objc(seekBack:)
-	func seekBack(amount: Double) {
-		performSeek(to: -amount, isAbsolute: false)
+	func seekBack(offsetMs: Double) {
+		// Seeking is disabled for radio streams
+		log("seekBack() ignored for radio stream")
 	}
 
 
@@ -1011,7 +828,7 @@ class AudioPro: RCTEventEmitter {
 			}
 		}
 
-		// Always set live stream indicator for live audio streams
+		// Always set live stream indicator for radio streams
 		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
 
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
@@ -1076,79 +893,64 @@ class AudioPro: RCTEventEmitter {
 	////////////////////////////////////////////////////////////
 
 	private func setupRemoteTransportControls() {
-		if isRemoteCommandCenterSetup { return }
 		let commandCenter = MPRemoteCommandCenter.shared()
-
-		// Configure only play, pause, and changePlaybackPosition commands
-		let commands: [(MPRemoteCommand, Bool)] = [
-			(commandCenter.playCommand, true),
-			(commandCenter.pauseCommand, true),
-			(commandCenter.changePlaybackPositionCommand, true)
-		]
-
-		// Always remove targets and disable next/previous commands
+		
+		// Clear existing commands first to avoid duplicates
+		commandCenter.playCommand.removeTarget(nil)
+		commandCenter.pauseCommand.removeTarget(nil)
+		commandCenter.stopCommand.removeTarget(nil)
+		commandCenter.togglePlayPauseCommand.removeTarget(nil)
+		commandCenter.changePlaybackPositionCommand.removeTarget(nil)
+		commandCenter.skipForwardCommand.removeTarget(nil)
+		commandCenter.skipBackwardCommand.removeTarget(nil)
 		commandCenter.nextTrackCommand.removeTarget(nil)
 		commandCenter.previousTrackCommand.removeTarget(nil)
-		commandCenter.nextTrackCommand.isEnabled = false
-		commandCenter.previousTrackCommand.isEnabled = false
-
-		// Enable all other commands
-		commands.forEach { $0.0.isEnabled = $0.1 }
-
-		// Add targets
+		
+		// Add play command
 		commandCenter.playCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
-			self.log("[Remote] playCommand received. player?.rate=\(String(describing: self.player?.rate)), player=\(self.player != nil)")
-			if self.player?.rate == 0 {
-				self.resume()
-				return .success
-			}
-			return .commandFailed
+			self.log("Remote command: play")
+			self.resume()
+			return .success
 		}
-
+		
+		// Add pause command
 		commandCenter.pauseCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
-			if self.player?.rate != 0 {
+			self.log("Remote command: pause")
+			self.pause()
+			return .success
+		}
+		
+		// Add stop command
+		commandCenter.stopCommand.addTarget { [weak self] _ in
+			guard let self = self else { return .commandFailed }
+			self.log("Remote command: stop")
+			self.stop()
+			return .success
+		}
+		
+		// Add toggle play/pause command
+		commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+			guard let self = self else { return .commandFailed }
+			self.log("Remote command: togglePlayPause")
+			if self.player?.rate == 0 {
+				self.resume()
+			} else {
 				self.pause()
-				return .success
-			}
-			return .commandFailed
-		}
-
-		// Still add targets for next/prev in case system calls them, but they should never be enabled
-		commandCenter.nextTrackCommand.addTarget { [weak self] _ in
-			guard let self = self else { return .commandFailed }
-			self.sendEvent(type: self.EVENT_TYPE_REMOTE_NEXT, track: self.currentTrack, payload: [:])
-			return .commandFailed
-		}
-
-		commandCenter.previousTrackCommand.addTarget { [weak self] _ in
-			guard let self = self else { return .commandFailed }
-			self.sendEvent(type: self.EVENT_TYPE_REMOTE_PREV, track: self.currentTrack, payload: [:])
-			return .commandFailed
-		}
-
-		commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
-			guard let self = self, let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-				return .commandFailed
-			}
-			self.seekTo(position: positionEvent.positionTime * 1000)
-			if self.hasListeners {
-				let positionMs = positionEvent.positionTime * 1000
-				let info = self.getPlaybackInfo()
-				let payload: [String: Any] = [
-					"position": Int(positionMs),
-					"duration": info.duration,
-					"triggeredBy": self.TRIGGER_SOURCE_SYSTEM
-				]
-				self.sendEvent(type: self.EVENT_TYPE_SEEK_COMPLETE, track: self.currentTrack, payload: payload)
 			}
 			return .success
 		}
-
-		commandCenter.changePlaybackPositionCommand.removeTarget(nil)
+		
+		// Disable seeking commands for live streams
 		commandCenter.changePlaybackPositionCommand.isEnabled = false
-
+		commandCenter.skipForwardCommand.isEnabled = false
+		commandCenter.skipBackwardCommand.isEnabled = false
+		
+		// Disable next/previous track commands
+		commandCenter.nextTrackCommand.isEnabled = false
+		commandCenter.previousTrackCommand.isEnabled = false
+		
 		isRemoteCommandCenterSetup = true
 	}
 
@@ -1335,7 +1137,133 @@ class AudioPro: RCTEventEmitter {
 
 	private func updateNextPrevControlsState() {
 		let commandCenter = MPRemoteCommandCenter.shared()
+		
+		// Always disable next/previous for radio streams
 		commandCenter.nextTrackCommand.isEnabled = false
 		commandCenter.previousTrackCommand.isEnabled = false
+		
+		// Always disable seeking for radio streams
+		commandCenter.seekForwardCommand.isEnabled = false
+		commandCenter.seekBackwardCommand.isEnabled = false
+		commandCenter.skipForwardCommand.isEnabled = false
+		commandCenter.skipBackwardCommand.isEnabled = false
+		commandCenter.changePlaybackPositionCommand.isEnabled = false
+	}
+
+	private func configureAudioSession() throws {
+		// Configure audio session for playback
+		let session = AVAudioSession.sharedInstance()
+		try session.setCategory(.playback, mode: .default)
+		try session.setActive(true, options: .notifyOthersOnDeactivation)
+		
+		// Set up audio session interruption observer
+		setupAudioSessionInterruptionObserver()
+		
+		log("Audio session configured for playback")
+	}
+
+	private func updateNowPlayingInfo(time: Double, rate: Float) {
+		guard let track = currentTrack else { return }
+		
+		var nowPlayingInfo = [String: Any]()
+		
+		// Set title, artist, and album
+		if let title = track["title"] as? String {
+			nowPlayingInfo[MPMediaItemPropertyTitle] = title
+		}
+		
+		if let artist = track["artist"] as? String {
+			nowPlayingInfo[MPMediaItemPropertyArtist] = artist
+		}
+		
+		if let album = track["album"] as? String {
+			nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
+		}
+		
+		// Always set as live stream for radio
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+		
+		// Set playback rate
+		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
+		
+		// Set elapsed time if not a live stream
+		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
+		
+		// For radio streams, we don't set the duration
+		// This helps indicate it's a live stream with no end time
+		
+		// Load and set artwork if available
+		if let artworkUrlString = track["artwork"] as? String, let artworkUrl = URL(string: artworkUrlString) {
+			loadArtwork(from: artworkUrl) { [weak self] image in
+				guard let self = self, let image = image else { return }
+				
+				var updatedInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+				updatedInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+				MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
+			}
+		}
+		
+		// Update the now playing info
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+	}
+
+	private func createPlayerItem(with url: URL, headers: NSDictionary?) -> AVPlayerItem {
+		// Create player item with custom headers if provided
+		if let headers = headers, let audioHeaders = headers["audio"] as? NSDictionary {
+			// Convert headers to Swift dictionary
+			var headerFields = [String: String]()
+			for (key, value) in audioHeaders {
+				if let headerField = key as? String, let headerValue = value as? String {
+					headerFields[headerField] = headerValue
+				}
+			}
+			
+			// Create an AVAsset with the headers
+			let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headerFields])
+			return AVPlayerItem(asset: asset)
+		} else {
+			// No headers, use simple URL initialization
+			return AVPlayerItem(url: url)
+		}
+	}
+
+	private func setupPlayerItemObservers(_ playerItem: AVPlayerItem) {
+		// Add observer for status changes
+		playerItem.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+		isStatusObserverAdded = true
+		
+		// Add rate observer to the player
+		player?.addObserver(self, forKeyPath: "rate", options: [.new], context: nil)
+		isRateObserverAdded = true
+		
+		// Add notification observer for track completion
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(playerItemDidPlayToEndTime(_:)),
+			name: .AVPlayerItemDidPlayToEndTime,
+			object: playerItem
+		)
+	}
+
+	private func loadArtwork(from url: URL, completion: @escaping (UIImage?) -> Void) {
+		DispatchQueue.global().async {
+			do {
+				let data = try Data(contentsOf: url)
+				if let image = UIImage(data: data) {
+					DispatchQueue.main.async {
+						completion(image)
+					}
+				} else {
+					DispatchQueue.main.async {
+						completion(nil)
+					}
+				}
+			} catch {
+				self.log("Failed to load artwork: \(error.localizedDescription)")
+				DispatchQueue.main.async {
+					completion(nil)
+				}
+			}
+		}
 	}
 }

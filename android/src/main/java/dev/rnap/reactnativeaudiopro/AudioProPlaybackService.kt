@@ -1,6 +1,7 @@
 package dev.rnap.reactnativeaudiopro
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -25,58 +26,57 @@ import androidx.media3.session.MediaConstants
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSession.ControllerInfo
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
+import com.google.common.util.concurrent.ListenableFuture
+import android.os.Bundle
 
-open class AudioProPlaybackService : MediaLibraryService() {
+class AudioProPlaybackService : MediaLibraryService() {
 
+	private lateinit var player: Player
 	private lateinit var mediaLibrarySession: MediaLibrarySession
 
 	companion object {
 		private const val NOTIFICATION_ID = 789
-		private const val CHANNEL_ID = "audio_pro_notification_channel_id"
+		private const val CHANNEL_ID = "react_native_audio_pro_channel"
 	}
 
 	/**
 	 * Returns the single top session activity. It is used by the notification when the app task is
 	 * active and an activity is in the fore or background.
-	 *
-	 * Tapping the notification then typically should trigger a single top activity. This way, the
-	 * user navigates to the previous activity when pressing back.
-	 *
-	 * If null is returned, [MediaSession.setSessionActivity] is not set by the demo service.
 	 */
 	open fun getSingleTopActivity(): PendingIntent? = null
 
 	/**
 	 * Returns a back stacked session activity that is used by the notification when the service is
-	 * running standalone as a foreground service. This is typically the case after the app has been
-	 * dismissed from the recent tasks, or after automatic playback resumption.
-	 *
-	 * Typically, a playback activity should be started with a stack of activities underneath. This
-	 * way, when pressing back, the user doesn't land on the home screen of the device, but on an
-	 * activity defined in the back stack.
-	 *
-	 * See [androidx.core.app.TaskStackBuilder] to construct a back stack.
-	 *
-	 * If null is returned, [MediaSession.setSessionActivity] is not set by the demo service.
+	 * running standalone as a foreground service.
 	 */
 	open fun getBackStackedActivity(): PendingIntent? = null
 
-	/**
-	 * Creates the library session callback to implement the domain logic. Can be overridden to return
-	 * an alternative callback, for example a subclass of [AudioProMediaLibrarySessionCallback].
-	 *
-	 * This method is called when the session is built by the [AudioProPlaybackService].
-	 */
-	@OptIn(UnstableApi::class)
-	protected open fun createLibrarySessionCallback(): MediaLibrarySession.Callback {
-		return AudioProMediaLibrarySessionCallback()
-	}
-
-	@OptIn(UnstableApi::class) // MediaSessionService.setListener
 	override fun onCreate() {
 		super.onCreate()
-		initializeSessionAndPlayer()
-		setListener(MediaSessionServiceListener())
+		
+		// Create ExoPlayer instance directly
+		val player = ExoPlayer.Builder(this)
+			.setAudioAttributes(
+				AudioAttributes.Builder()
+					.setUsage(C.USAGE_MEDIA)
+					.setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+					.build(),
+				/* handleAudioFocus= */ true
+			)
+			.build()
+			
+		// Store player reference
+		this.player = player
+		
+		mediaLibrarySession = MediaLibrarySession.Builder(
+			this,
+			player,
+			AudioProMediaLibrarySessionCallback()
+		).build()
+		
+		createNotificationChannel()
 	}
 
 	override fun onGetSession(controllerInfo: ControllerInfo): MediaLibrarySession {
@@ -88,50 +88,16 @@ open class AudioProPlaybackService : MediaLibraryService() {
 	 * This happens when the user swipes away the app from the recent apps list
 	 */
 	override fun onTaskRemoved(rootIntent: android.content.Intent?) {
-		android.util.Log.d("AudioProPlaybackService", "Task removed, stopping service")
-
-		// Force stop playback and release resources
-		try {
-			if (::mediaLibrarySession.isInitialized) {
-				// Stop playback
-				mediaLibrarySession.player.stop()
-				// Release player and session
-				mediaLibrarySession.player.release()
-				mediaLibrarySession.release()
-			}
-		} catch (e: Exception) {
-			android.util.Log.e("AudioProPlaybackService", "Error stopping playback", e)
+		if (!player.isPlaying) {
+			stopSelf()
 		}
-
-		// Remove notification and stop service
-		removeNotificationAndStopService()
-
 		super.onTaskRemoved(rootIntent)
 	}
 
-	// MediaSession.setSessionActivity
-	// MediaSessionService.clearListener
 	@OptIn(UnstableApi::class)
 	override fun onDestroy() {
-		android.util.Log.d("AudioProPlaybackService", "Service being destroyed")
-
-		// Make sure to release all resources
-		try {
-			if (::mediaLibrarySession.isInitialized) {
-				// Stop playback first
-				mediaLibrarySession.player.stop()
-				// Release session and player
-				mediaLibrarySession.release()
-				mediaLibrarySession.player.release()
-			}
-			clearListener()
-		} catch (e: Exception) {
-			android.util.Log.e("AudioProPlaybackService", "Error during service destruction", e)
-		}
-
-		// Remove notification
-		removeNotificationAndStopService()
-
+		mediaLibrarySession.release()
+		player.release()
 		super.onDestroy()
 	}
 
@@ -163,54 +129,16 @@ open class AudioProPlaybackService : MediaLibraryService() {
 		}
 	}
 
-	@OptIn(UnstableApi::class)
-	private fun initializeSessionAndPlayer() {
-		// Create a composite data source factory that can handle both HTTP and file URIs
-		val dataSourceFactory = object : DataSource.Factory {
-			override fun createDataSource(): DataSource {
-				// Create HTTP data source factory with custom headers if available
-				val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-
-				// Apply custom headers if they exist
-				AudioProController.headersAudio?.let { headers ->
-					if (headers.isNotEmpty()) {
-						httpDataSourceFactory.setDefaultRequestProperties(headers)
-						android.util.Log.d(
-							"AudioProPlaybackService",
-							"Applied custom headers: $headers"
-						)
-					}
-				}
-
-				// Create a DefaultDataSource that will handle both HTTP and file URIs
-				// It will delegate to FileDataSource for file:// URIs and to HttpDataSource for http(s):// URIs
-				return DefaultDataSource.Factory(applicationContext, httpDataSourceFactory)
-					.createDataSource()
-			}
+	private fun createNotificationChannel() {
+		val channel = NotificationChannel(
+			CHANNEL_ID,
+			"Audio Pro Playback",
+			NotificationManager.IMPORTANCE_LOW
+		).apply {
+			description = "Audio playback controls"
 		}
-
-		val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-
-		val player =
-			ExoPlayer.Builder(this)
-				.setMediaSourceFactory(mediaSourceFactory)
-				.setAudioAttributes(
-					AudioAttributes.Builder()
-						.setUsage(C.USAGE_MEDIA)
-						.setContentType(AudioProController.settingAudioContentType)
-						.build(),
-					/* handleAudioFocus = */ true
-				)
-				.build()
-		player.setHandleAudioBecomingNoisy(true)
-		player.repeatMode = Player.REPEAT_MODE_OFF
-		player.addAnalyticsListener(EventLogger())
-
-		// Build the media library session without any extras for skip actions
-		mediaLibrarySession =
-			MediaLibrarySession.Builder(this, player, createLibrarySessionCallback())
-				.also { builder -> getSingleTopActivity()?.let { builder.setSessionActivity(it) } }
-				.build()
+		val notificationManagerCompat = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+		notificationManagerCompat.createNotificationChannel(channel)
 	}
 
 	@OptIn(UnstableApi::class) // MediaSessionService.Listener
@@ -236,11 +164,6 @@ open class AudioProPlaybackService : MediaLibraryService() {
 			ensureNotificationChannel(notificationManagerCompat)
 			val builder =
 				NotificationCompat.Builder(this@AudioProPlaybackService, CHANNEL_ID)
-					//.setSmallIcon(R.drawable.media3_notification_small_icon)
-					//.setContentTitle(getString(R.string.notification_content_title))
-					//.setStyle(
-					//  NotificationCompat.BigTextStyle().bigText(getString(R.string.notification_content_text))
-					//)
 					.setPriority(NotificationCompat.PRIORITY_DEFAULT)
 					.setAutoCancel(true)
 					.also { builder -> getBackStackedActivity()?.let { builder.setContentIntent(it) } }

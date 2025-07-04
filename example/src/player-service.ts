@@ -3,10 +3,10 @@ import {
 	type AudioProEvent,
 	AudioProEventType,
 	type AudioProTrack,
+	AudioPro,
 } from 'react-native-audio-pro';
 
 import { playlist } from './playlist';
-import { AudioPro } from '../../src/audioPro';
 
 // Track the current playlist position
 let currentIndex = 0;
@@ -18,7 +18,6 @@ export function setupAudioPro(): void {
 		debug: true,
 		debugIncludesProgress: false,
 		progressIntervalMs: 1000,
-		showNextPrevControls: false,
 	});
 
 	// Set up event listeners that persist for the app's lifetime
@@ -46,22 +45,22 @@ export function setupAudioPro(): void {
 	});
 }
 
-function playNextTrack(autoPlay: boolean = true): void {
+function playNextTrack(): void {
 	if (playlist.length === 0) return;
 
 	currentIndex = (currentIndex + 1) % playlist.length;
 	const nextTrack = playlist[currentIndex];
 
-	AudioPro.play(nextTrack as AudioProTrack, { autoPlay });
+	AudioPro.play(nextTrack as AudioProTrack);
 }
 
-function playPreviousTrack(autoPlay: boolean = true): void {
+function playPreviousTrack(): void {
 	if (playlist.length === 0) return;
 
 	currentIndex = currentIndex > 0 ? currentIndex - 1 : playlist.length - 1;
 	const prevTrack = playlist[currentIndex];
 
-	AudioPro.play(prevTrack as AudioProTrack, { autoPlay });
+	AudioPro.play(prevTrack as AudioProTrack);
 }
 
 export function getCurrentTrackIndex(): number {
@@ -74,10 +73,13 @@ export function setCurrentTrackIndex(index: number): void {
 	}
 }
 
+// For progress interval adjustment demo
+let progressInterval = 1000;
+
 export function getProgressInterval(): number {
-	return AudioPro.getProgressInterval()!;
+	return progressInterval;
 }
 
 export function setProgressInterval(ms: number): void {
-	AudioPro.setProgressInterval(ms);
+	progressInterval = ms;
 }
