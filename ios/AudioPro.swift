@@ -99,14 +99,29 @@ class AudioPro: RCTEventEmitter {
 			name: AVAudioSession.interruptionNotification,
 			object: nil
 		)
+		
+		// Register for media server reset notifications per Apple guidelines
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(handleMediaServicesReset(_:)),
+			name: AVAudioSession.mediaServicesWereResetNotification,
+			object: nil
+		)
 
-		log("Registered for audio session interruption notifications")
+		log("Registered for audio session interruption and media server reset notifications")
 	}
 
 	private func removeAudioSessionInterruptionObserver() {
 		NotificationCenter.default.removeObserver(
 			self,
 			name: AVAudioSession.interruptionNotification,
+			object: nil
+		)
+		
+		// Remove media server reset observer
+		NotificationCenter.default.removeObserver(
+			self,
+			name: AVAudioSession.mediaServicesWereResetNotification,
 			object: nil
 		)
 	}
@@ -133,39 +148,136 @@ class AudioPro: RCTEventEmitter {
 			}
 		case .ended:
 			log("Audio session interruption ended")
-			// Get the interruption options
+			
+			// Per Apple guidelines: Check if we were playing before interruption
+			guard wasPlayingBeforeInterruption else {
+				log("Was not playing before interruption, no action needed")
+				wasPlayingBeforeInterruption = false
+				return
+			}
+			
+			// Get the interruption options (may not be present for all interruption types)
 			let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
 			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
-
-			if wasPlayingBeforeInterruption && options.contains(.shouldResume) {
-				log("Interruption ended with resume option, resuming playback")
-
-				// Try to reactivate the audio session
-				do {
-					try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-
-					// Resume playback
-					player?.play()
-					startProgressTimer()
-
-					// Emit PLAYING state
-					sendPlayingStateEvent()
-
-					// Update now playing info
-					updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 1.0)
-					
-					// Ensure next/prev controls are properly updated after interruption
-					updateNextPrevControlsState()
-				} catch {
-					log("Failed to reactivate audio session: \(error.localizedDescription)")
-					emitPlaybackError("Unable to resume audio playback")
-				}
+			
+			// Check for shouldResume flag as per Apple guidelines
+			if options.contains(.shouldResume) {
+				log("Interruption ended with shouldResume flag, automatically resuming playback")
+				attemptResumeAfterInterruption()
+			} else {
+				log("Interruption ended without shouldResume flag, updating UI to paused state")
+				// Per Apple guidelines: Don't auto-resume if shouldResume flag is not present
+				// Update internal state and UI to reflect that we're paused, not playing
+				shouldBePlaying = false
+				stopTimer()
+				
+				// Update UI to show paused state (critical for user experience)
+				sendPausedStateEvent()
+				
+				// Update now playing info to reflect paused state
+				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
+				
+				log("App is now in paused state, waiting for user interaction to resume")
 			}
 
 			// Reset the flag
 			wasPlayingBeforeInterruption = false
 		@unknown default:
 			break
+		}
+	}
+	
+	/// Handles media server reset per Apple's Audio Guidelines
+	/// The media server provides audio functionality through a shared server process.
+	/// When it resets, all audio objects become orphaned and must be recreated.
+	@objc private func handleMediaServicesReset(_ notification: Notification) {
+		log("Media services were reset - recreating audio objects per Apple guidelines")
+		
+		// Remember current state
+		let wasPlaying = shouldBePlaying
+		let currentPosition = player?.currentTime().seconds ?? 0
+		let savedTrack = currentTrack
+		
+		// Per Apple guidelines: Dispose of orphaned audio objects and create new ones
+		cleanup(emitStateChange: false, clearTrack: false)
+		
+		// Reset internal audio states as required by Apple
+		shouldBePlaying = false
+		wasPlayingBeforeInterruption = false
+		isInErrorState = false
+		lastEmittedState = ""
+		
+		// If we had a track and were playing, attempt to restore playback
+		if let track = savedTrack, wasPlaying {
+			log("Attempting to restore playback after media server reset")
+			
+			// Recreate the player with the same track
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+				guard let self = self else { return }
+				
+				// Use the existing play method to recreate everything
+				let options: NSDictionary = [
+					"autoPlay": false, // Don't auto-play, let user decide
+					"debug": self.settingDebug
+				]
+				
+				self.play(track: track, options: options)
+				
+				// Update UI to show that manual restart is needed
+				self.sendPausedStateEvent()
+				self.log("Media server reset recovery complete - manual restart required")
+			}
+		} else {
+			// No active playback to restore
+			sendStateEvent(state: STATE_IDLE, position: 0, duration: 0, track: nil)
+		}
+	}
+	
+	/// Attempts to resume playback after an interruption when shouldResume flag is present
+	/// Per Apple's Audio Guidelines for User-Controlled Playback Apps
+	private func attemptResumeAfterInterruption() {
+		do {
+			// Reactivate the audio session
+			try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+			log("Audio session reactivated successfully after interruption")
+			
+			// Ensure we still have a valid player and track
+			guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
+				log("Player or track lost during interruption, cannot resume")
+				shouldBePlaying = false
+				sendPausedStateEvent()
+				return
+			}
+			
+			// Resume playback
+			player.play()
+			shouldBePlaying = true
+			startProgressTimer()
+			
+			// Update UI to reflect playing state
+			sendPlayingStateEvent()
+			
+			// Update now playing info with current state
+			let currentTime = player.currentTime().seconds
+			let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
+			updateNowPlayingInfo(time: validTime, rate: 1.0)
+			
+			// Ensure remote controls are properly updated
+			updateNextPrevControlsState()
+			
+			log("Playback resumed successfully after interruption")
+			
+		} catch {
+			log("Failed to reactivate audio session after interruption: \(error.localizedDescription)")
+			
+			// Update state to reflect failure to resume
+			shouldBePlaying = false
+			stopTimer()
+			sendPausedStateEvent()
+			updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
+			
+			// Emit error to inform the app
+			emitPlaybackError("Unable to resume audio playback")
 		}
 	}
 
