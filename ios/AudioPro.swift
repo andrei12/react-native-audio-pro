@@ -259,9 +259,16 @@ class AudioPro: RCTEventEmitter {
 				player.removeObserver(self, forKeyPath: "rate")
 				isRateObserverAdded = false
 			}
-			if let currentItem = player.currentItem, isStatusObserverAdded {
-				currentItem.removeObserver(self, forKeyPath: "status")
-				isStatusObserverAdded = false
+			if let currentItem = player.currentItem {
+				if isStatusObserverAdded {
+					currentItem.removeObserver(self, forKeyPath: "status")
+					isStatusObserverAdded = false
+				}
+				
+				// Remove buffering observers
+				currentItem.removeObserver(self, forKeyPath: "playbackBufferEmpty", context: nil)
+				currentItem.removeObserver(self, forKeyPath: "playbackLikelyToKeepUp", context: nil)
+				currentItem.removeObserver(self, forKeyPath: "playbackBufferFull", context: nil)
 			}
 		}
 
@@ -292,35 +299,72 @@ class AudioPro: RCTEventEmitter {
 		// Clean up previous player if it exists
 		prepareForNewPlayback()
 		
-		// Create player item with URL
-		let headers = options["headers"] as? NSDictionary
-		let playerItem = createPlayerItem(with: url, headers: headers)
-		
-		// Create player with the item
-		player = AVPlayer(playerItem: playerItem)
-		player?.volume = volume
-		
-		// Always use normal playback speed for live streams
-		player?.rate = 1.0
-		currentPlaybackSpeed = 1.0
-		
-		// Setup observers for the player item
-		setupPlayerItemObservers(playerItem)
-		
-		// Update the remote command center
-		setupRemoteTransportControls()
-		
-		// Update the now playing info
-		updateNowPlayingInfo(time: 0, rate: autoPlay ? 1.0 : 0.0)
-		
-		// Start playback if autoPlay is true
+		// Send loading state immediately so UI can update
 		if autoPlay {
-			player?.play()
 			shouldBePlaying = true
 			sendStateEvent(state: STATE_LOADING, position: 0, duration: 0)
-		} else {
-			shouldBePlaying = false
-			sendStateEvent(state: STATE_PAUSED, position: 0, duration: 0)
+		}
+		
+		// Configure audio session first to ensure proper setup
+		do {
+			try configureAudioSession()
+		} catch {
+			log("Failed to configure audio session: \(error.localizedDescription)")
+			emitPlaybackError("Failed to configure audio session: \(error.localizedDescription)")
+			// Continue anyway, as playback might still work
+		}
+		
+		// Move heavy operations to background queue
+		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+			guard let self = self else { return }
+			
+			// Create player item with URL
+			let headers = options["headers"] as? NSDictionary
+			let playerItem = self.createPlayerItem(with: url, headers: headers)
+			
+			// Set preferred forward buffer duration for better buffering
+			playerItem.preferredForwardBufferDuration = 5.0
+			
+			// Return to main queue for player setup
+			DispatchQueue.main.async {
+				// Create player with the item
+				self.player = AVPlayer(playerItem: playerItem)
+				self.player?.volume = volume
+				
+				// Set automatic buffering
+				self.player?.automaticallyWaitsToMinimizeStalling = true
+				
+				// Always use normal playback speed for live streams
+				self.player?.rate = 1.0
+				self.currentPlaybackSpeed = 1.0
+				
+				// Setup observers for the player item
+				self.setupPlayerItemObservers(playerItem)
+				
+				// Update the remote command center
+				self.setupRemoteTransportControls()
+				
+				// Update the now playing info
+				self.updateNowPlayingInfo(time: 0, rate: autoPlay ? 1.0 : 0.0)
+				
+				// Start playback if autoPlay is true
+				if autoPlay {
+					self.player?.play()
+					
+					// Set a timeout to check if playback started
+					DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+						guard let self = self else { return }
+						if self.shouldBePlaying && self.player?.rate == 0 {
+							// If still not playing after 5 seconds, try to restart playback
+							self.log("Playback didn't start after 5 seconds, trying to restart")
+							self.player?.play()
+						}
+					}
+				} else {
+					self.shouldBePlaying = false
+					self.sendStateEvent(state: STATE_PAUSED, position: 0, duration: 0)
+				}
+			}
 		}
 	}
 
@@ -337,25 +381,43 @@ class AudioPro: RCTEventEmitter {
 	func resume() {
 		log("[Resume] Called. player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		shouldBePlaying = true
-		// Try to reactivate the audio session if needed
-		do {
-			if !AVAudioSession.sharedInstance().isOtherAudioPlaying {
-				try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-				log("[Resume] AVAudioSession activated successfully.")
+		
+		// Send loading state immediately so UI can update
+		sendStateEvent(state: STATE_LOADING, position: 0, duration: 0)
+		
+		// Try to reactivate the audio session if needed in background
+		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+			guard let self = self else { return }
+			
+			do {
+				if !AVAudioSession.sharedInstance().isOtherAudioPlaying {
+					try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+					self.log("[Resume] AVAudioSession activated successfully.")
+				}
+				
+				// Return to main queue for playback
+				DispatchQueue.main.async {
+					self.log("[Resume] Before player?.play(). player=\(self.player != nil), player?.rate=\(String(describing: self.player?.rate)), player?.currentItem=\(String(describing: self.player?.currentItem))")
+					self.player?.play()
+					self.log("[Resume] After player?.play(). player=\(self.player != nil), player?.rate=\(String(describing: self.player?.rate)), player?.currentItem=\(String(describing: self.player?.currentItem))")
+					
+					// Ensure lock screen controls are properly updated
+					self.updateNowPlayingInfo(time: self.player?.currentTime().seconds ?? 0, rate: 1.0)
+					// Ensure next/prev controls are properly updated
+					self.updateNextPrevControlsState()
+					// Note: We don't need to call sendPlayingStateEvent() here because
+					// the rate change will trigger observeValue which now calls sendPlayingStateEvent()
+				}
+			} catch {
+				DispatchQueue.main.async {
+					self.log("[Resume] Failed to reactivate audio session: \(error.localizedDescription)")
+					// Continue anyway, as the play command might still work
+					self.player?.play()
+					self.updateNowPlayingInfo(time: self.player?.currentTime().seconds ?? 0, rate: 1.0)
+					self.updateNextPrevControlsState()
+				}
 			}
-		} catch {
-			log("[Resume] Failed to reactivate audio session: \(error.localizedDescription)")
-			// Continue anyway, as the play command might still work
 		}
-		log("[Resume] Before player?.play(). player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
-		player?.play()
-		log("[Resume] After player?.play(). player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
-		// Ensure lock screen controls are properly updated
-		updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 1.0)
-		// Ensure next/prev controls are properly updated
-		updateNextPrevControlsState()
-		// Note: We don't need to call sendPlayingStateEvent() here because
-		// the rate change will trigger observeValue which now calls sendPlayingStateEvent()
 	}
 
 	/// stop is meant to halt playback and update the state without destroying persistent info
@@ -681,6 +743,15 @@ class AudioPro: RCTEventEmitter {
 				switch item.status {
 				case .readyToPlay:
 					log("Player item ready to play")
+					
+					// If we're supposed to be playing, ensure we're actually playing
+					if shouldBePlaying {
+						player?.play()
+						// Force a state update to PLAYING since we're ready
+						sendPlayingStateEvent()
+						startProgressTimer()
+					}
+					
 					if let pendingStartTimeMs = pendingStartTimeMs {
 						performSeek(to: pendingStartTimeMs, isAbsolute: true)
 						self.pendingStartTimeMs = nil
@@ -697,12 +768,43 @@ class AudioPro: RCTEventEmitter {
 					break
 				}
 			}
+		case "playbackBufferEmpty":
+			log("Playback buffer is empty, may need to wait for buffering")
+			if shouldBePlaying && hasListeners {
+				let info = getPlaybackInfo()
+				sendStateEvent(state: STATE_LOADING, position: info.position, duration: info.duration, track: info.track)
+			}
+			
+		case "playbackLikelyToKeepUp":
+			log("Playback likely to keep up, can start/resume playback")
+			if let item = object as? AVPlayerItem, item.isPlaybackLikelyToKeepUp && shouldBePlaying {
+				// If we're supposed to be playing and buffering is good, ensure we're playing
+				player?.play()
+				sendPlayingStateEvent()
+				startProgressTimer()
+			}
+			
+		case "playbackBufferFull":
+			log("Playback buffer is full")
+			if shouldBePlaying {
+				// Buffer is full, make sure we're playing
+				player?.play()
+				sendPlayingStateEvent()
+				startProgressTimer()
+			}
+			
 		case "rate":
 			if let newRate = change?[.newKey] as? Float {
 				if newRate == 0 {
 					if shouldBePlaying && hasListeners {
+						// Only show loading if we're supposed to be playing but rate dropped to 0
+						// This could be due to buffering
 						let info = getPlaybackInfo()
-						sendStateEvent(state: STATE_LOADING, position: info.position, duration: info.duration, track: info.track)
+						
+						// Check if the buffer is empty before showing loading state
+						if let currentItem = player?.currentItem, currentItem.isPlaybackBufferEmpty {
+							sendStateEvent(state: STATE_LOADING, position: info.position, duration: info.duration, track: info.track)
+						}
 						stopTimer()
 					}
 				} else {
@@ -1153,12 +1255,18 @@ class AudioPro: RCTEventEmitter {
 	private func configureAudioSession() throws {
 		// Configure audio session for playback
 		let session = AVAudioSession.sharedInstance()
+		
+		// Use mixWithOthers option if needed to prevent interrupting other audio
+		// try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+		
+		// Standard playback category for best compatibility
 		try session.setCategory(.playback, mode: .default)
+		
+		// Set audio session active synchronously to ensure it's ready before playback starts
 		try session.setActive(true, options: .notifyOthersOnDeactivation)
 		
 		// Set up audio session interruption observer
 		setupAudioSessionInterruptionObserver()
-		
 		log("Audio session configured for playback")
 	}
 
@@ -1229,12 +1337,17 @@ class AudioPro: RCTEventEmitter {
 
 	private func setupPlayerItemObservers(_ playerItem: AVPlayerItem) {
 		// Add observer for status changes
-		playerItem.addObserver(self, forKeyPath: "status", options: [.new], context: nil)
+		playerItem.addObserver(self, forKeyPath: "status", options: [.new, .old], context: nil)
 		isStatusObserverAdded = true
 		
 		// Add rate observer to the player
-		player?.addObserver(self, forKeyPath: "rate", options: [.new], context: nil)
+		player?.addObserver(self, forKeyPath: "rate", options: [.new, .old], context: nil)
 		isRateObserverAdded = true
+		
+		// Add observers for buffering progress
+		playerItem.addObserver(self, forKeyPath: "playbackBufferEmpty", options: [.new], context: nil)
+		playerItem.addObserver(self, forKeyPath: "playbackLikelyToKeepUp", options: [.new], context: nil)
+		playerItem.addObserver(self, forKeyPath: "playbackBufferFull", options: [.new], context: nil)
 		
 		// Add notification observer for track completion
 		NotificationCenter.default.addObserver(
