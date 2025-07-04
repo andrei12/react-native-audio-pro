@@ -472,8 +472,17 @@ class AudioPro: RCTEventEmitter {
 
 		pendingStartTimeMs = nil
 
-		player?.pause()
-		player?.seek(to: .zero)
+		// For live streams, we need to tear down the player connection rather than just pausing
+		// because seeking to zero on a live stream puts the player in an invalid state
+		log("Stopping playback - cleaning up player for live stream")
+		
+		// Clean up the player but preserve track metadata and remote controls
+		prepareForNewPlayback()
+		
+		// For live streams, fully disconnect by clearing the player
+		// This ensures resume() will restart the stream connection
+		player = nil
+		
 		stopTimer()
 		// Do not set currentTrack = nil as STOPPED state should preserve track metadata
 		sendStoppedStateEvent()
@@ -1052,8 +1061,15 @@ class AudioPro: RCTEventEmitter {
 		commandCenter.playCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
 			self.log("Remote command: play")
-			self.resume()
-			return .success
+			
+			// Can always resume if we have a track, even from stopped state
+			if self.currentTrack != nil {
+				self.resume()
+				return .success
+			} else {
+				self.log("Remote play failed: no track to play")
+				return .commandFailed
+			}
 		}
 		
 		// Add pause command
@@ -1077,7 +1093,19 @@ class AudioPro: RCTEventEmitter {
 			guard let self = self else { return .commandFailed }
 			self.log("Remote command: togglePlayPause")
 			
-			// More robust state checking for toggle command
+			// Handle stopped state (no player) - can resume if we have a track
+			if self.player == nil {
+				if self.currentTrack != nil {
+					self.log("Remote toggle: resuming from stopped state")
+					self.resume()
+					return .success
+				} else {
+					self.log("Remote toggle failed: no track to resume")
+					return .commandFailed
+				}
+			}
+			
+			// Handle normal play/pause toggle
 			guard let player = self.player, let _ = player.currentItem else {
 				self.log("Remote toggle failed: no player or item")
 				return .commandFailed
