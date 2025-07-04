@@ -380,6 +380,14 @@ class AudioPro: RCTEventEmitter {
 	@objc(resume)
 	func resume() {
 		log("[Resume] Called. player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
+		
+		// Validate we have a player and track before attempting resume
+		guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
+			log("[Resume] No player, item, or track available for resume")
+			onError("Cannot resume: no track loaded")
+			return
+		}
+		
 		shouldBePlaying = true
 		
 		// Send loading state immediately so UI can update
@@ -390,31 +398,54 @@ class AudioPro: RCTEventEmitter {
 			guard let self = self else { return }
 			
 			do {
-				if !AVAudioSession.sharedInstance().isOtherAudioPlaying {
-					try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+				let session = AVAudioSession.sharedInstance()
+				if !session.isOtherAudioPlaying {
+					try session.setActive(true, options: .notifyOthersOnDeactivation)
 					self.log("[Resume] AVAudioSession activated successfully.")
 				}
 				
 				// Return to main queue for playback
 				DispatchQueue.main.async {
-					self.log("[Resume] Before player?.play(). player=\(self.player != nil), player?.rate=\(String(describing: self.player?.rate)), player?.currentItem=\(String(describing: self.player?.currentItem))")
-					self.player?.play()
-					self.log("[Resume] After player?.play(). player=\(self.player != nil), player?.rate=\(String(describing: self.player?.rate)), player?.currentItem=\(String(describing: self.player?.currentItem))")
+					// Double-check we still have a valid player
+					guard let player = self.player, let _ = player.currentItem else {
+						self.log("[Resume] Player became invalid during session activation")
+						return
+					}
 					
-					// Ensure lock screen controls are properly updated
-					self.updateNowPlayingInfo(time: self.player?.currentTime().seconds ?? 0, rate: 1.0)
+					self.log("[Resume] Before player?.play(). player=\(player), player?.rate=\(String(describing: player.rate)), player?.currentItem=\(String(describing: player.currentItem))")
+					
+					// Start playback
+					player.play()
+					
+					self.log("[Resume] After player?.play(). player=\(player), player?.rate=\(String(describing: player.rate)), player?.currentItem=\(String(describing: player.currentItem))")
+					
+					// Update lock screen controls with current playback state
+					let currentTime = player.currentTime().seconds
+					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
+					self.updateNowPlayingInfo(time: validTime, rate: 1.0)
+					
 					// Ensure next/prev controls are properly updated
 					self.updateNextPrevControlsState()
-					// Note: We don't need to call sendPlayingStateEvent() here because
-					// the rate change will trigger observeValue which now calls sendPlayingStateEvent()
+					
+					// Force start progress timer to ensure state updates
+					self.startProgressTimer()
 				}
 			} catch {
 				DispatchQueue.main.async {
 					self.log("[Resume] Failed to reactivate audio session: \(error.localizedDescription)")
-					// Continue anyway, as the play command might still work
-					self.player?.play()
-					self.updateNowPlayingInfo(time: self.player?.currentTime().seconds ?? 0, rate: 1.0)
+					
+					// Try to continue anyway, but with fallback handling
+					guard let player = self.player else {
+						self.onError("Player lost during audio session error")
+						return
+					}
+					
+					player.play()
+					let currentTime = player.currentTime().seconds
+					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
+					self.updateNowPlayingInfo(time: validTime, rate: 1.0)
 					self.updateNextPrevControlsState()
+					self.startProgressTimer()
 				}
 			}
 		}
@@ -1036,7 +1067,14 @@ class AudioPro: RCTEventEmitter {
 		commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
 			self.log("Remote command: togglePlayPause")
-			if self.player?.rate == 0 {
+			
+			// More robust state checking for toggle command
+			guard let player = self.player, let _ = player.currentItem else {
+				self.log("Remote toggle failed: no player or item")
+				return .commandFailed
+			}
+			
+			if player.rate == 0 || !self.shouldBePlaying {
 				self.resume()
 			} else {
 				self.pause()
@@ -1256,26 +1294,25 @@ class AudioPro: RCTEventEmitter {
 		// Configure audio session for playback
 		let session = AVAudioSession.sharedInstance()
 		
-		// Use mixWithOthers option if needed to prevent interrupting other audio
-		// try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-		
-		// Standard playback category for best compatibility
-		try session.setCategory(.playback, mode: .default)
+		// Set playback category with options for better lock screen control support
+		// Use .allowAirPlay and .allowBluetoothA2DP for better device compatibility
+		try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
 		
 		// Set audio session active synchronously to ensure it's ready before playback starts
 		try session.setActive(true, options: .notifyOthersOnDeactivation)
 		
 		// Set up audio session interruption observer
 		setupAudioSessionInterruptionObserver()
-		log("Audio session configured for playback")
+		log("Audio session configured for playback with enhanced options")
 	}
 
 	private func updateNowPlayingInfo(time: Double, rate: Float) {
 		guard let track = currentTrack else { return }
 		
-		var nowPlayingInfo = [String: Any]()
+		// Preserve existing now playing info to avoid clearing artwork
+		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 		
-		// Set title, artist, and album
+		// Set title, artist, and album only if not already set
 		if let title = track["title"] as? String {
 			nowPlayingInfo[MPMediaItemPropertyTitle] = title
 		}
@@ -1294,14 +1331,16 @@ class AudioPro: RCTEventEmitter {
 		// Set playback rate
 		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
 		
-		// Set elapsed time if not a live stream
+		// Set elapsed time
 		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
 		
-		// For radio streams, we don't set the duration
-		// This helps indicate it's a live stream with no end time
+		// Update the now playing info (this preserves artwork if already loaded)
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 		
-		// Load and set artwork if available
-		if let artworkUrlString = track["artwork"] as? String, let artworkUrl = URL(string: artworkUrlString) {
+		// Load and set artwork if available and not already loaded
+		if let artworkUrlString = track["artwork"] as? String, 
+		   let artworkUrl = URL(string: artworkUrlString),
+		   nowPlayingInfo[MPMediaItemPropertyArtwork] == nil {
 			loadArtwork(from: artworkUrl) { [weak self] image in
 				guard let self = self, let image = image else { return }
 				
@@ -1310,9 +1349,6 @@ class AudioPro: RCTEventEmitter {
 				MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
 			}
 		}
-		
-		// Update the now playing info
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
 	private func createPlayerItem(with url: URL, headers: NSDictionary?) -> AVPlayerItem {
