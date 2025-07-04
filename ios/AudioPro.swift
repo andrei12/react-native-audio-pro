@@ -145,8 +145,13 @@ class AudioPro: RCTEventEmitter {
 		case .began:
 			print("🚨 [AudioPro] INTERRUPTION BEGAN!")
 			log("🔴 Audio session interruption began (timer/call/alarm)")
-			// Remember if we were playing when interruption began
-			wasPlayingBeforeInterruption = player?.rate != 0
+			// Determine if we *intended* to be playing when the interruption began.
+			// Using `shouldBePlaying` is more reliable than `player?.rate` because the
+			// system sets `rate` to 0 *before* posting the `.began` notification. This
+			// caused false negatives for short interruptions such as Clock alarms.
+			// We still fall back to checking the current rate to cover edge-cases in
+			// which `shouldBePlaying` might be out-of-sync.
+			wasPlayingBeforeInterruption = shouldBePlaying || (player?.rate ?? 0) != 0
 
 			if wasPlayingBeforeInterruption {
 				// Pause playback but don't emit state change
