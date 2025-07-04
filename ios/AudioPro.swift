@@ -425,6 +425,7 @@ class AudioPro: RCTEventEmitter {
 
 		if autoPlay {
 			player?.play()
+			updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: player?.rate ?? 1.0)
 		} else {
 			DispatchQueue.main.async {
 				self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0, track: self.currentTrack)
@@ -1006,6 +1007,27 @@ class AudioPro: RCTEventEmitter {
 			}
 			if nowPlayingInfo[MPMediaItemPropertyAlbumTitle] == nil, let album = trackInfo["album"] as? String {
 				nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
+			}
+			
+			if let isLive = trackInfo["isLive"] as? Bool {
+				if isLive {
+					nowPlayingInfo["MPNowPlayingInfoPropertyIsLiveStream"] = true
+
+					// Remove duration/progress properties for live streams
+					nowPlayingInfo.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
+					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyElapsedPlaybackTime)
+					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackProgress)
+
+					// Force update the now playing info center
+					MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+
+				} else {
+					// Remove the live stream indicator if present
+					nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
+				}
+			} else {
+				// Remove the live stream indicator if present
+				nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
 			}
 		}
 

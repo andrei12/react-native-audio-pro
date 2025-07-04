@@ -4,6 +4,7 @@ export type Track = {
 	title: string;
 	artwork: string;
 	artist: string;
+	isLive?: boolean;
 };
 
 export const playlist: Track[] = [
@@ -20,6 +21,7 @@ export const playlist: Track[] = [
 		title: 'Castr Stream (HLS)',
 		artwork: 'https://rnap.dev/artwork-usgs-8tfu4320oxI-unsplash.jpg',
 		artist: 'Castr',
+		isLive: true,
 	},
 	{
 		id: 'error-track-1',
