@@ -41,6 +41,13 @@ export function setupAudioPro(): void {
 			case AudioProEventType.PLAYBACK_ERROR:
 				console.warn('Playback error:', event.payload?.error);
 				break;
+
+			case AudioProEventType.STATE_CHANGED:
+				// Monitor state changes to track interruption behavior
+				console.log(
+					`🎵 State changed to: ${event.payload?.state} (${new Date().toLocaleTimeString()})`,
+				);
+				break;
 		}
 	});
 }

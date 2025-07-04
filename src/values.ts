@@ -53,6 +53,10 @@ export enum AudioProEventType {
 	REMOTE_PREV = 'REMOTE_PREV',
 	/** Playback error has occurred */
 	PLAYBACK_ERROR = 'PLAYBACK_ERROR',
+	/** Audio interruption began (timer, call, etc.) */
+	AUDIO_INTERRUPTION_BEGAN = 'AUDIO_INTERRUPTION_BEGAN',
+	/** Audio interruption ended */
+	AUDIO_INTERRUPTION_ENDED = 'AUDIO_INTERRUPTION_ENDED',
 }
 
 /**

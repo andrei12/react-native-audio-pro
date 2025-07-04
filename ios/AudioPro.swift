@@ -30,6 +30,10 @@ class AudioPro: RCTEventEmitter {
 	private let EVENT_TYPE_REMOTE_NEXT = "REMOTE_NEXT"
 	private let EVENT_TYPE_REMOTE_PREV = "REMOTE_PREV"
 	private let EVENT_TYPE_PLAYBACK_SPEED_CHANGED = "PLAYBACK_SPEED_CHANGED"
+	
+	// Audio interruption event types - sent to React Native for handling
+	private let EVENT_TYPE_AUDIO_INTERRUPTION_BEGAN = "AUDIO_INTERRUPTION_BEGAN"
+	private let EVENT_TYPE_AUDIO_INTERRUPTION_ENDED = "AUDIO_INTERRUPTION_ENDED"
 
 	// Seek trigger sources
 	private let TRIGGER_SOURCE_USER = "USER"
@@ -68,7 +72,6 @@ class AudioPro: RCTEventEmitter {
 
 	private var isInErrorState: Bool = false
 	private var lastEmittedState: String = ""
-	private var wasPlayingBeforeInterruption: Bool = false
 	private var pendingStartTimeMs: Double? = nil
 	private var isExplicitlyStopped: Bool = false  // Track if user explicitly stopped (vs just paused)
 
@@ -183,7 +186,6 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	@objc private func handleAudioSessionInterruption(_ notification: Notification) {
-		// UNCONDITIONAL logging to verify this handler is called
 		print("🚨 [AudioPro] INTERRUPTION HANDLER CALLED!")
 		
 		guard let userInfo = notification.userInfo,
@@ -196,144 +198,60 @@ class AudioPro: RCTEventEmitter {
 		switch type {
 		case .began:
 			print("🚨 [AudioPro] INTERRUPTION BEGAN!")
-			log("🔴 Audio session interruption began (timer/call/alarm)")
-			// Determine if we *intended* to be playing when the interruption began.
-			// Using `shouldBePlaying` is more reliable than `player?.rate` because the
-			// system sets `rate` to 0 *before* posting the `.began` notification. This
-			// caused false negatives for short interruptions such as Clock alarms.
-			// We still fall back to checking the current rate to cover edge-cases in
-			// which `shouldBePlaying` might be out-of-sync.
-			wasPlayingBeforeInterruption = shouldBePlaying || (player?.rate ?? 0) != 0
-			log("🔴 wasPlayingBeforeInterruption = \(wasPlayingBeforeInterruption) (shouldBePlaying=\(shouldBePlaying), rate=\(player?.rate ?? 0))")
-
-			if wasPlayingBeforeInterruption {
-				// Pause playback but don't emit state change
-				player?.pause()
-				stopTimer()
-				
-				// Update UI state to paused
-				shouldBePlaying = false
-				sendPausedStateEvent()
-				
-				// CRITICAL: Update lock screen controls to show paused state
-				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
-				log("🔴 Lock screen controls updated to show PAUSED state")
-			}
+			log("🔴 Audio session interruption began - notifying React Native")
+			
+			// Determine if we were playing when the interruption began
+			let wasPlaying = shouldBePlaying || (player?.rate ?? 0) != 0
+			
+			// Send interruption event to React Native with current state
+			let payload: [String: Any] = [
+				"wasPlaying": wasPlaying,
+				"currentTime": player?.currentTime().seconds ?? 0,
+				"interruptionType": "began"
+			]
+			
+			sendEvent(type: EVENT_TYPE_AUDIO_INTERRUPTION_BEGAN, track: currentTrack, payload: payload)
+			
 		case .ended:
 			print("🚨 [AudioPro] INTERRUPTION ENDED!")
-			log("🟡 Audio session interruption ended")
+			log("🟡 Audio session interruption ended - notifying React Native")
 			
-			// Per Apple guidelines: Check if we were playing before interruption
-			guard wasPlayingBeforeInterruption else {
-				log("🟡 Was not playing before interruption, no action needed")
-				wasPlayingBeforeInterruption = false
-				return
-			}
-			
-			// Get the interruption options (may not be present for all interruption types)
+			// Get the interruption options
 			let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
 			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
+			let shouldResume = options.contains(.shouldResume)
 			
-			log("🟡 Interruption options: \(optionsValue ?? 0), shouldResume: \(options.contains(.shouldResume))")
+			// Send interruption ended event to React Native
+			let payload: [String: Any] = [
+				"shouldResume": shouldResume,
+				"interruptionType": "ended",
+				"options": optionsValue ?? 0
+			]
 			
-			// Check for shouldResume flag as per Apple guidelines
-			if options.contains(.shouldResume) {
-				log("🟢 Interruption ended WITH shouldResume flag - auto-resuming playback")
-				attemptResumeAfterInterruption()
-			} else {
-				log("🔴 Interruption ended WITHOUT shouldResume flag - staying paused per Apple guidelines")
-				// Per Apple guidelines: Don't auto-resume if shouldResume flag is not present
-				// Update internal state and UI to reflect that we're paused, not playing
-				shouldBePlaying = false
-				stopTimer()
-				
-				// Update UI to show paused state (critical for user experience)
-				sendPausedStateEvent()
-				
-				// Update now playing info to reflect paused state
-				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
-				
-				log("🔴 UI updated to PAUSED state - user must manually resume")
-			}
-
-			// Reset the flag
-			wasPlayingBeforeInterruption = false
+			sendEvent(type: EVENT_TYPE_AUDIO_INTERRUPTION_ENDED, track: currentTrack, payload: payload)
+			
 		@unknown default:
 			break
 		}
 	}
 	
-	/// Attempts to resume playback after an interruption when shouldResume flag is present
-	/// Per Apple's Audio Guidelines for User-Controlled Playback Apps
-	private func attemptResumeAfterInterruption() {
+	/// Reactivates the audio session after an interruption
+	/// This is called from React Native when it decides to resume playback
+	@objc(reactivateAudioSession)
+	func reactivateAudioSession() {
 		do {
 			let session = AVAudioSession.sharedInstance()
 			
 			// Check if session is already active
 			if !session.isOtherAudioPlaying {
 				try session.setActive(true, options: .notifyOthersOnDeactivation)
-				log("Audio session reactivated successfully after interruption")
+				log("Audio session reactivated successfully from React Native")
 			} else {
 				log("Other audio is playing, keeping session active")
 			}
-			
-			// Ensure we still have a valid player and track
-			guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
-				log("Player or track lost during interruption, cannot resume")
-				shouldBePlaying = false
-				sendPausedStateEvent()
-				return
-			}
-			
-			// Attempt to resume playback
-			player.play()
-			shouldBePlaying = true
-			
-			// Emit a LOADING state first; observers will emit PLAYING when rate actually rises > 0
-			let info = getPlaybackInfo()
-			sendStateEvent(state: STATE_LOADING, position: info.position, duration: info.duration, track: info.track)
-			
-			// Update now playing info to show we're preparing to resume (rate 0)
-			let currentTime = player.currentTime().seconds
-			let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
-			updateNowPlayingInfo(time: validTime, rate: 0.0)
-			
-			// Remote controls: keep them enabled but don't alter next/prev yet
-			updateNextPrevControlsState()
-			
-			// Progress timer will start once rate observer fires.
-			log("Playback resume initiated after interruption – awaiting player rate > 0")
-
-			// Retry logic: if after 3 s the player rate is still 0 while we expect playback, retry once.
-			DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-				guard let self = self else { return }
-				if self.shouldBePlaying, let player = self.player, player.rate == 0 {
-					self.log("Resume watchdog: rate still 0 after 3s – retrying play() once")
-					player.play()
-					// If it still fails after retry, we'll leave UI in paused state for user.
-					DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-						guard let self = self else { return }
-						if self.shouldBePlaying, let player = self.player, player.rate == 0 {
-							self.log("Resume watchdog: second attempt failed – reverting to PAUSED state")
-							self.shouldBePlaying = false
-							self.sendPausedStateEvent()
-							self.updateNowPlayingInfo(time: player.currentTime().seconds, rate: 0.0)
-						}
-					}
-				}
-			}
-			
 		} catch {
-			log("Failed to reactivate audio session after interruption: \(error.localizedDescription)")
-			
-			// Update state to reflect failure to resume
-			shouldBePlaying = false
-			stopTimer()
-			sendPausedStateEvent()
-			updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
-			
-			// Emit error to inform the app
-			emitPlaybackError("Unable to resume audio playback")
+			log("Failed to reactivate audio session: \(error.localizedDescription)")
+			emitPlaybackError("Unable to reactivate audio session")
 		}
 	}
 	
@@ -353,7 +271,6 @@ class AudioPro: RCTEventEmitter {
 		
 		// Reset internal audio states as required by Apple
 		shouldBePlaying = false
-		wasPlayingBeforeInterruption = false
 		isInErrorState = false
 		lastEmittedState = ""
 		
