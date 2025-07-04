@@ -1663,12 +1663,16 @@ class AudioPro: RCTEventEmitter {
 		print("🚨 [AudioPro] MANUAL TEST: Simulating interruption handling")
 		
 		// Simulate what happens when we were playing before interruption
-		wasPlayingBeforeInterruption = true
 		shouldBePlaying = true
 		
 		// Simulate interruption ended with shouldResume
-		print("🚨 [AudioPro] MANUAL TEST: Calling attemptResumeAfterInterruption")
-		attemptResumeAfterInterruption()
+		print("🚨 [AudioPro] MANUAL TEST: Calling reactivateAudioSession and resume")
+		reactivateAudioSession()
+		
+		// Small delay then resume
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+			self?.resume()
+		}
 	}
 	
 	@objc(testAudioSessionState)
