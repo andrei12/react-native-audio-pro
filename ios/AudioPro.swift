@@ -288,6 +288,25 @@ class AudioPro: RCTEventEmitter {
 			
 			// Progress timer will start once rate observer fires.
 			log("Playback resume initiated after interruption – awaiting player rate > 0")
+
+			// Retry logic: if after 3 s the player rate is still 0 while we expect playback, retry once.
+			DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+				guard let self = self else { return }
+				if self.shouldBePlaying, let player = self.player, player.rate == 0 {
+					self.log("Resume watchdog: rate still 0 after 3s – retrying play() once")
+					player.play()
+					// If it still fails after retry, we’ll leave UI in paused state for user.
+					DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+						guard let self = self else { return }
+						if self.shouldBePlaying, let player = self.player, player.rate == 0 {
+							self.log("Resume watchdog: second attempt failed – reverting to PAUSED state")
+							self.shouldBePlaying = false
+							self.sendPausedStateEvent()
+							self.updateNowPlayingInfo(time: player.currentTime().seconds, rate: 0.0)
+						}
+					}
+				}
+			}
 			
 		} catch {
 			log("Failed to reactivate audio session after interruption: \(error.localizedDescription)")
