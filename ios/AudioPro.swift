@@ -362,7 +362,7 @@ class AudioPro: RCTEventEmitter {
 					}
 				} else {
 					self.shouldBePlaying = false
-					self.sendStateEvent(state: STATE_PAUSED, position: 0, duration: 0)
+					self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
 				}
 			}
 		}
