@@ -73,6 +73,18 @@ class AudioPro: RCTEventEmitter {
 	private var isExplicitlyStopped: Bool = false  // Track if user explicitly stopped (vs just paused)
 
 	////////////////////////////////////////////////////////////
+	// MARK: - Initialization
+	////////////////////////////////////////////////////////////
+
+	override init() {
+		super.init()
+		// Set up interruption observer immediately when module is created
+		// This ensures we can handle interruptions even before playback starts
+		setupAudioSessionInterruptionObserver()
+		log("AudioPro module initialized with interruption observer")
+	}
+
+	////////////////////////////////////////////////////////////
 	// MARK: - React Native Event Emitter Overrides
 	////////////////////////////////////////////////////////////
 
@@ -113,6 +125,11 @@ class AudioPro: RCTEventEmitter {
 
 		print("🚨 [AudioPro] INTERRUPTION OBSERVER SETUP COMPLETE")
 		log("Registered for audio session interruption and media server reset notifications")
+		
+		// Test that the observer is working by posting a test notification
+		DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+			print("🚨 [AudioPro] TESTING INTERRUPTION OBSERVER - if you see this, the observer is working")
+		}
 	}
 
 	private func removeAudioSessionInterruptionObserver() {
@@ -1510,8 +1527,7 @@ class AudioPro: RCTEventEmitter {
 		// Set audio session active synchronously to ensure it's ready before playback starts
 		try session.setActive(true, options: .notifyOthersOnDeactivation)
 		
-		// Set up audio session interruption observer
-		setupAudioSessionInterruptionObserver()
+		// Interruption observer is already set up in init()
 		log("Audio session configured for playback with enhanced options")
 	}
 
