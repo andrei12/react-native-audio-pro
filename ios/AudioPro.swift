@@ -158,7 +158,7 @@ class AudioPro: RCTEventEmitter {
 					updateNextPrevControlsState()
 				} catch {
 					log("Failed to reactivate audio session: \(error.localizedDescription)")
-					emitPlaybackError("Failed to resume after interruption: \(error.localizedDescription)")
+					emitPlaybackError("Unable to resume audio playback")
 				}
 			}
 
@@ -306,12 +306,13 @@ class AudioPro: RCTEventEmitter {
 		}
 		
 		// Configure audio session first to ensure proper setup
-		do {
-			try configureAudioSession()
-		} catch {
-			log("Failed to configure audio session: \(error.localizedDescription)")
-			emitPlaybackError("Failed to configure audio session: \(error.localizedDescription)")
-			// Continue anyway, as playback might still work
+			do {
+				try configureAudioSession()
+			} catch {
+				log("Failed to configure audio session: \(error.localizedDescription)")
+				emitPlaybackError("Unable to configure audio playback")
+				// Continue anyway, as playback might still work
+			}
 		}
 		
 		// Move heavy operations to background queue
@@ -384,6 +385,14 @@ class AudioPro: RCTEventEmitter {
 		// If we have a track but no valid player/item (stopped state), restart playback
 		if let track = currentTrack, (player == nil || player?.currentItem == nil) {
 			log("[Resume] Restarting playback from stopped state")
+			// Ensure audio session is configured before restarting
+			do {
+				try configureAudioSession()
+			} catch {
+				log("Failed to configure audio session on resume: \(error.localizedDescription)")
+				onError("Cannot resume: failed to configure audio session")
+				return
+			}
 			// Use the existing track with autoPlay enabled
 			let options: NSDictionary = ["autoPlay": true]
 			play(track: track, options: options)
@@ -1391,21 +1400,30 @@ class AudioPro: RCTEventEmitter {
 	private func createPlayerItem(with url: URL, headers: NSDictionary?) -> AVPlayerItem {
 		// Create player item with custom headers if provided
 		if let headers = headers, let audioHeaders = headers["audio"] as? NSDictionary {
-			// Convert headers to Swift dictionary
+			// Convert and validate headers to Swift dictionary
 			var headerFields = [String: String]()
 			for (key, value) in audioHeaders {
-				if let headerField = key as? String, let headerValue = value as? String {
+				// Validate header key and value for security
+				if let headerField = key as? String, 
+				   let headerValue = value as? String,
+				   headerField.count < 256, // Reasonable limit
+				   headerValue.count < 1024, // Reasonable limit
+				   !headerField.isEmpty,
+				   headerField.rangeOfCharacter(from: CharacterSet.controlCharacters) == nil,
+				   headerValue.rangeOfCharacter(from: CharacterSet.controlCharacters) == nil {
 					headerFields[headerField] = headerValue
 				}
 			}
 			
-			// Create an AVAsset with the headers
-			let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headerFields])
-			return AVPlayerItem(asset: asset)
-		} else {
-			// No headers, use simple URL initialization
-			return AVPlayerItem(url: url)
+			// Only use headers if we have valid ones
+			if !headerFields.isEmpty {
+				let asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headerFields])
+				return AVPlayerItem(asset: asset)
+			}
 		}
+		
+		// No headers or invalid headers, use simple URL initialization
+		return AVPlayerItem(url: url)
 	}
 
 	private func setupPlayerItemObservers(_ playerItem: AVPlayerItem) {
@@ -1432,24 +1450,40 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	private func loadArtwork(from url: URL, completion: @escaping (UIImage?) -> Void) {
-		DispatchQueue.global().async {
-			do {
-				let data = try Data(contentsOf: url)
-				if let image = UIImage(data: data) {
-					DispatchQueue.main.async {
-						completion(image)
-					}
-				} else {
-					DispatchQueue.main.async {
-						completion(nil)
-					}
-				}
-			} catch {
+		// Use URLSession for secure, asynchronous network requests per Apple guidelines
+		let request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30.0)
+		
+		URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+			guard let self = self else { return }
+			
+			// Validate response
+			if let error = error {
 				self.log("Failed to load artwork: \(error.localizedDescription)")
-				DispatchQueue.main.async {
-					completion(nil)
-				}
+				DispatchQueue.main.async { completion(nil) }
+				return
 			}
-		}
+			
+			// Validate HTTP response status
+			if let httpResponse = response as? HTTPURLResponse,
+			   !(200...299).contains(httpResponse.statusCode) {
+				self.log("Failed to load artwork: HTTP \(httpResponse.statusCode)")
+				DispatchQueue.main.async { completion(nil) }
+				return
+			}
+			
+			// Validate and process image data
+			guard let data = data,
+				  data.count > 0,
+				  data.count < 10_000_000, // Limit to 10MB for security
+				  let image = UIImage(data: data) else {
+				self.log("Invalid or oversized artwork data")
+				DispatchQueue.main.async { completion(nil) }
+				return
+			}
+			
+			DispatchQueue.main.async {
+				completion(image)
+			}
+		}.resume()
 	}
 }
