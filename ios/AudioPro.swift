@@ -418,13 +418,12 @@ class AudioPro: RCTEventEmitter {
 		}
 		
 		// Configure audio session first to ensure proper setup
-			do {
-				try configureAudioSession()
-			} catch {
-				log("Failed to configure audio session: \(error.localizedDescription)")
-				emitPlaybackError("Unable to configure audio playback")
-				// Continue anyway, as playback might still work
-			}
+		do {
+			try configureAudioSession()
+		} catch {
+			log("Failed to configure audio session: \(error.localizedDescription)")
+			emitPlaybackError("Unable to configure audio playback")
+			// Continue anyway, as playback might still work
 		}
 		
 		// Move heavy operations to background queue
