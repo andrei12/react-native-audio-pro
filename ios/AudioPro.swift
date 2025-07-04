@@ -270,23 +270,24 @@ class AudioPro: RCTEventEmitter {
 				return
 			}
 			
-			// Resume playback
+			// Attempt to resume playback
 			player.play()
 			shouldBePlaying = true
-			startProgressTimer()
 			
-			// Update UI to reflect playing state
-			sendPlayingStateEvent()
+			// Emit a LOADING state first; observers will emit PLAYING when rate actually rises > 0
+			let info = getPlaybackInfo()
+			sendStateEvent(state: STATE_LOADING, position: info.position, duration: info.duration, track: info.track)
 			
-			// Update now playing info with current state
+			// Update now playing info to show we're preparing to resume (rate 0)
 			let currentTime = player.currentTime().seconds
 			let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
-			updateNowPlayingInfo(time: validTime, rate: 1.0)
+			updateNowPlayingInfo(time: validTime, rate: 0.0)
 			
-			// Ensure remote controls are properly updated
+			// Remote controls: keep them enabled but don't alter next/prev yet
 			updateNextPrevControlsState()
 			
-			log("Playback resumed successfully after interruption")
+			// Progress timer will start once rate observer fires.
+			log("Playback resume initiated after interruption – awaiting player rate > 0")
 			
 		} catch {
 			log("Failed to reactivate audio session after interruption: \(error.localizedDescription)")
