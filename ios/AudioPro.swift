@@ -302,7 +302,7 @@ class AudioPro: RCTEventEmitter {
 		// Send loading state immediately so UI can update
 		if autoPlay {
 			shouldBePlaying = true
-			sendStateEvent(state: STATE_LOADING, position: 0, duration: 0)
+			sendStateEvent(state: STATE_LOADING, position: 0, duration: 0, track: currentTrack)
 		}
 		
 		// Configure audio session first to ensure proper setup
@@ -381,6 +381,15 @@ class AudioPro: RCTEventEmitter {
 	func resume() {
 		log("[Resume] Called. player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		
+		// If we have a track but no valid player/item (stopped state), restart playback
+		if let track = currentTrack, (player == nil || player?.currentItem == nil) {
+			log("[Resume] Restarting playback from stopped state")
+			// Use the existing track with autoPlay enabled
+			let options: NSDictionary = ["autoPlay": true]
+			play(track: track, options: options)
+			return
+		}
+		
 		// Validate we have a player and track before attempting resume
 		guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
 			log("[Resume] No player, item, or track available for resume")
@@ -391,7 +400,7 @@ class AudioPro: RCTEventEmitter {
 		shouldBePlaying = true
 		
 		// Send loading state immediately so UI can update
-		sendStateEvent(state: STATE_LOADING, position: 0, duration: 0)
+		sendStateEvent(state: STATE_LOADING, position: 0, duration: 0, track: currentTrack)
 		
 		// Try to reactivate the audio session if needed in background
 		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
