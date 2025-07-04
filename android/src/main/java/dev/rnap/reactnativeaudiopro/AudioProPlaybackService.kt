@@ -206,6 +206,7 @@ open class AudioProPlaybackService : MediaLibraryService() {
 		player.repeatMode = Player.REPEAT_MODE_OFF
 		player.addAnalyticsListener(EventLogger())
 
+		// Build the media library session without any extras for skip actions
 		mediaLibrarySession =
 			MediaLibrarySession.Builder(this, player, createLibrarySessionCallback())
 				.also { builder -> getSingleTopActivity()?.let { builder.setSessionActivity(it) } }
