@@ -1,15 +1,15 @@
 package dev.rnap.reactnativeaudiopro
 
+import android.content.Context
 import android.os.Bundle
-import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
-import androidx.media3.session.SessionError
 import androidx.media3.session.SessionResult
+import com.google.common.collect.ImmutableList
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -17,42 +17,33 @@ import com.google.common.util.concurrent.ListenableFuture
 @UnstableApi
 open class AudioProMediaLibrarySessionCallback : MediaLibraryService.MediaLibrarySession.Callback {
 
-	private val nextButton = CommandButton.Builder(CommandButton.ICON_NEXT)
+	private val nextButton = CommandButton.Builder()
 		.setDisplayName("Next")
-		.setSessionCommand(
-			SessionCommand(
-				CUSTOM_COMMAND_NEXT,
-				Bundle.EMPTY
-			)
-		)
+		.setIconResId(androidx.media3.session.R.drawable.media3_notification_seek_to_next)
+		.setSessionCommand(SessionCommand(COMMAND_SKIP_TO_NEXT, Bundle()))
 		.build()
 
-	private val prevButton = CommandButton.Builder(CommandButton.ICON_PREVIOUS)
+	private val prevButton = CommandButton.Builder()
 		.setDisplayName("Previous")
-		.setSessionCommand(
-			SessionCommand(
-				CUSTOM_COMMAND_PREV,
-				Bundle.EMPTY
-			)
-		)
+		.setIconResId(androidx.media3.session.R.drawable.media3_notification_seek_to_prev)
+		.setSessionCommand(SessionCommand(COMMAND_SKIP_TO_PREVIOUS, Bundle()))
 		.build()
 
 	private fun getCommandButtons(): List<CommandButton> {
-		AudioProController.log("Checking if next/prev controls are enabled")
-		return if (AudioProController.settingShowNextPrevControls) {
-			AudioProController.log("Next/Prev controls are enabled")
-			listOf(nextButton, prevButton)
-		} else {
-			AudioProController.log("Next/Prev controls are disabled")
-			emptyList()
-		}
+		// Always return empty list to disable next/prev/seek controls
+		return emptyList()
 	}
 
 	companion object {
-		private const val CUSTOM_COMMAND_NEXT =
-			"dev.rnap.reactnativeaudiopro.NEXT"
-		private const val CUSTOM_COMMAND_PREV =
-			"dev.rnap.reactnativeaudiopro.PREV"
+		const val COMMAND_SKIP_TO_NEXT = "skip_to_next"
+		const val COMMAND_SKIP_TO_PREVIOUS = "skip_to_previous"
+	}
+
+	private fun getCustomCommands(): List<SessionCommand> {
+		return listOf(
+			SessionCommand(COMMAND_SKIP_TO_NEXT, Bundle()),
+			SessionCommand(COMMAND_SKIP_TO_PREVIOUS, Bundle())
+		)
 	}
 
 	@OptIn(UnstableApi::class) // MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS
@@ -70,10 +61,19 @@ open class AudioProMediaLibrarySessionCallback : MediaLibraryService.MediaLibrar
 		session: MediaSession,
 		controller: MediaSession.ControllerInfo,
 	): MediaSession.ConnectionResult {
-		return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
-			.setAvailableSessionCommands(mediaNotificationSessionCommands)
-			.setMediaButtonPreferences(getCommandButtons())
-			.build()
+		val connectionResult = super.onConnect(session, controller)
+
+		val availableSessionCommands = connectionResult.availableSessionCommands.buildUpon()
+
+		// Add custom commands
+		for (customCommand in getCustomCommands()) {
+			availableSessionCommands.add(customCommand)
+		}
+
+		return MediaSession.ConnectionResult.accept(
+			availableSessionCommands.build(),
+			connectionResult.availablePlayerCommands
+		)
 	}
 
 	@OptIn(UnstableApi::class) // MediaSession.isMediaNotificationController
@@ -83,14 +83,16 @@ open class AudioProMediaLibrarySessionCallback : MediaLibraryService.MediaLibrar
 		customCommand: SessionCommand,
 		args: Bundle,
 	): ListenableFuture<SessionResult> {
-		if (CUSTOM_COMMAND_NEXT == customCommand.customAction) {
-			AudioProController.emitNext()
-			return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
-		} else if (CUSTOM_COMMAND_PREV == customCommand.customAction) {
-			AudioProController.emitPrev()
-			return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+		val player = session.player
+		when (customCommand.customAction) {
+			COMMAND_SKIP_TO_NEXT -> {
+				AudioProController.instance?.skipToNext()
+			}
+			COMMAND_SKIP_TO_PREVIOUS -> {
+				AudioProController.instance?.skipToPrevious()
+			}
 		}
-		return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+		return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
 	}
 
 	override fun onAddMediaItems(
@@ -101,4 +103,67 @@ open class AudioProMediaLibrarySessionCallback : MediaLibraryService.MediaLibrar
 		return Futures.immediateFuture(mediaItems)
 	}
 
+	override fun onGetLibraryRoot(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		params: MediaLibraryService.LibraryParams?
+	): ListenableFuture<LibraryResult<MediaLibraryService.LibraryParams>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onGetItem(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		mediaId: String
+	): ListenableFuture<LibraryResult<MediaItem>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onGetChildren(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		parentId: String,
+		page: Int,
+		pageSize: Int,
+		params: MediaLibraryService.LibraryParams?
+	): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onSubscribe(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		parentId: String,
+		params: MediaLibraryService.LibraryParams?
+	): ListenableFuture<LibraryResult<Void>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onUnsubscribe(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		parentId: String
+	): ListenableFuture<LibraryResult<Void>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onSearch(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		query: String,
+		params: MediaLibraryService.LibraryParams?
+	): ListenableFuture<LibraryResult<Void>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
+
+	override fun onGetSearchResult(
+		session: MediaLibraryService.MediaLibrarySession,
+		browser: MediaSession.ControllerInfo,
+		query: String,
+		page: Int,
+		pageSize: Int,
+		params: MediaLibraryService.LibraryParams?
+	): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+		return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+	}
 }

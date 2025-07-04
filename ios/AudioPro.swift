@@ -118,35 +118,25 @@ class AudioPro: RCTEventEmitter {
 			return
 		}
 
-		log("Audio session interruption: \(type)")
-
 		switch type {
 		case .began:
-			// Interruption began (e.g., phone call, Siri, other app playing audio)
+			log("Audio session interruption began")
+			// Remember if we were playing when interruption began
 			wasPlayingBeforeInterruption = player?.rate != 0
 
 			if wasPlayingBeforeInterruption {
-				log("Interruption began while playing, pausing playback")
-				// Pause playback without changing shouldBePlaying flag
+				// Pause playback but don't emit state change
 				player?.pause()
 				stopTimer()
-
-				// Emit PAUSED state to ensure UI is in sync
+				// Emit PAUSED state to ensure UI is updated
 				sendPausedStateEvent()
-
-				// Update now playing info to show paused state
-				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0)
 			}
-
 		case .ended:
-			// Interruption ended
-			guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
-				return
-			}
+			log("Audio session interruption ended")
+			// Get the interruption options
+			let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
+			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
 
-			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-
-			// If playback should resume and we have permission to do so
 			if wasPlayingBeforeInterruption && options.contains(.shouldResume) {
 				log("Interruption ended with resume option, resuming playback")
 
@@ -163,6 +153,9 @@ class AudioPro: RCTEventEmitter {
 
 					// Update now playing info
 					updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 1.0)
+					
+					// Ensure next/prev controls are properly updated after interruption
+					updateNextPrevControlsState()
 				} catch {
 					log("Failed to reactivate audio session: \(error.localizedDescription)")
 					emitPlaybackError("Failed to resume after interruption: \(error.localizedDescription)")
@@ -489,6 +482,8 @@ class AudioPro: RCTEventEmitter {
 					DispatchQueue.main.async {
 						var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 						currentInfo[MPMediaItemPropertyArtwork] = mpmArtwork
+						// Always set live stream indicator for live audio streams
+						currentInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
 						MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
 					}
 				} else {
@@ -501,6 +496,8 @@ class AudioPro: RCTEventEmitter {
 					DispatchQueue.main.async {
 						var currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 						currentInfo[MPMediaItemPropertyArtwork] = mpmArtwork
+						// Always set live stream indicator for live audio streams
+						currentInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
 						MPNowPlayingInfoCenter.default().nowPlayingInfo = currentInfo
 					}
 				}
@@ -524,23 +521,25 @@ class AudioPro: RCTEventEmitter {
 
 	@objc(resume)
 	func resume() {
+		log("[Resume] Called. player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		shouldBePlaying = true
-
 		// Try to reactivate the audio session if needed
 		do {
 			if !AVAudioSession.sharedInstance().isOtherAudioPlaying {
 				try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+				log("[Resume] AVAudioSession activated successfully.")
 			}
 		} catch {
-			log("Failed to reactivate audio session: \(error.localizedDescription)")
+			log("[Resume] Failed to reactivate audio session: \(error.localizedDescription)")
 			// Continue anyway, as the play command might still work
 		}
-
+		log("[Resume] Before player?.play(). player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		player?.play()
-
+		log("[Resume] After player?.play(). player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		// Ensure lock screen controls are properly updated
 		updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 1.0)
-
+		// Ensure next/prev controls are properly updated
+		updateNextPrevControlsState()
 		// Note: We don't need to call sendPlayingStateEvent() here because
 		// the rate change will trigger observeValue which now calls sendPlayingStateEvent()
 	}
@@ -720,6 +719,8 @@ class AudioPro: RCTEventEmitter {
 						var info = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
 						info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validPosition
 						info[MPNowPlayingInfoPropertyPlaybackRate] = player.rate
+						// Always set live stream indicator for live audio streams
+						info[MPNowPlayingInfoPropertyIsLiveStream] = true
 						MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 					}
 				}
@@ -1008,28 +1009,10 @@ class AudioPro: RCTEventEmitter {
 			if nowPlayingInfo[MPMediaItemPropertyAlbumTitle] == nil, let album = trackInfo["album"] as? String {
 				nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
 			}
-			
-			if let isLive = trackInfo["isLive"] as? Bool {
-				if isLive {
-					nowPlayingInfo["MPNowPlayingInfoPropertyIsLiveStream"] = true
-
-					// Remove duration/progress properties for live streams
-					nowPlayingInfo.removeValue(forKey: MPMediaItemPropertyPlaybackDuration)
-					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyElapsedPlaybackTime)
-					nowPlayingInfo.removeValue(forKey: MPNowPlayingInfoPropertyPlaybackProgress)
-
-					// Force update the now playing info center
-					MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-
-				} else {
-					// Remove the live stream indicator if present
-					nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
-				}
-			} else {
-				// Remove the live stream indicator if present
-				nowPlayingInfo.removeValue(forKey: "MPNowPlayingInfoPropertyIsLiveStream")
-			}
 		}
+
+		// Always set live stream indicator for live audio streams
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
 
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
@@ -1096,30 +1079,26 @@ class AudioPro: RCTEventEmitter {
 		if isRemoteCommandCenterSetup { return }
 		let commandCenter = MPRemoteCommandCenter.shared()
 
-		// Configure all commands including Magic Tap support
-		var commands: [(MPRemoteCommand, Bool)] = [
+		// Configure only play, pause, and changePlaybackPosition commands
+		let commands: [(MPRemoteCommand, Bool)] = [
 			(commandCenter.playCommand, true),
 			(commandCenter.pauseCommand, true),
-			(commandCenter.togglePlayPauseCommand, true), // Magic Tap support
 			(commandCenter.changePlaybackPositionCommand, true)
 		]
 
-		// Only add next/previous commands if showNextPrevControls is true
-		if settingShowNextPrevControls {
-			commands.append((commandCenter.nextTrackCommand, true))
-			commands.append((commandCenter.previousTrackCommand, true))
-		} else {
-			// Disable next/previous commands if showNextPrevControls is false
-			commandCenter.nextTrackCommand.isEnabled = false
-			commandCenter.previousTrackCommand.isEnabled = false
-		}
+		// Always remove targets and disable next/previous commands
+		commandCenter.nextTrackCommand.removeTarget(nil)
+		commandCenter.previousTrackCommand.removeTarget(nil)
+		commandCenter.nextTrackCommand.isEnabled = false
+		commandCenter.previousTrackCommand.isEnabled = false
 
-		// Enable all commands
+		// Enable all other commands
 		commands.forEach { $0.0.isEnabled = $0.1 }
 
 		// Add targets
 		commandCenter.playCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
+			self.log("[Remote] playCommand received. player?.rate=\(String(describing: self.player?.rate)), player=\(self.player != nil)")
 			if self.player?.rate == 0 {
 				self.resume()
 				return .success
@@ -1136,38 +1115,17 @@ class AudioPro: RCTEventEmitter {
 			return .commandFailed
 		}
 
-		// Magic Tap Support: Toggle Play/Pause command
-		// This enables VoiceOver Magic Tap (two-finger double-tap) functionality
-		commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
-			guard let self = self, let player = self.player else { return .commandFailed }
-			
-			self.log("Magic Tap (togglePlayPause) triggered")
-			
-			if player.rate > 0 {
-				// Currently playing → pause
-				self.pause()
-				self.log("Magic Tap: Paused")
-				return .success
-			} else if self.currentTrack != nil {
-				// Has track but paused → resume
-				self.resume()
-				self.log("Magic Tap: Resumed")
-				return .success
-			}
-			
-			return .commandFailed
-		}
-
+		// Still add targets for next/prev in case system calls them, but they should never be enabled
 		commandCenter.nextTrackCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
 			self.sendEvent(type: self.EVENT_TYPE_REMOTE_NEXT, track: self.currentTrack, payload: [:])
-			return .success
+			return .commandFailed
 		}
 
 		commandCenter.previousTrackCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
 			self.sendEvent(type: self.EVENT_TYPE_REMOTE_PREV, track: self.currentTrack, payload: [:])
-			return .success
+			return .commandFailed
 		}
 
 		commandCenter.changePlaybackPositionCommand.addTarget { [weak self] event in
@@ -1187,6 +1145,9 @@ class AudioPro: RCTEventEmitter {
 			}
 			return .success
 		}
+
+		commandCenter.changePlaybackPositionCommand.removeTarget(nil)
+		commandCenter.changePlaybackPositionCommand.isEnabled = false
 
 		isRemoteCommandCenterSetup = true
 	}
@@ -1366,5 +1327,15 @@ class AudioPro: RCTEventEmitter {
 		}
 
 		sendEvent(withName: AMBIENT_EVENT_NAME, body: body)
+	}
+
+	////////////////////////////////////////////////////////////
+	// MARK: - Remote Control Commands & Magic Tap Support
+	////////////////////////////////////////////////////////////
+
+	private func updateNextPrevControlsState() {
+		let commandCenter = MPRemoteCommandCenter.shared()
+		commandCenter.nextTrackCommand.isEnabled = false
+		commandCenter.previousTrackCommand.isEnabled = false
 	}
 }
