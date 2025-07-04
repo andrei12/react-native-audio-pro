@@ -136,7 +136,7 @@ class AudioPro: RCTEventEmitter {
 
 		switch type {
 		case .began:
-			log("Audio session interruption began")
+			log("🔴 Audio session interruption began (timer/call/alarm)")
 			// Remember if we were playing when interruption began
 			wasPlayingBeforeInterruption = player?.rate != 0
 
@@ -144,15 +144,21 @@ class AudioPro: RCTEventEmitter {
 				// Pause playback but don't emit state change
 				player?.pause()
 				stopTimer()
-				// Emit PAUSED state to ensure UI is updated
+				
+				// Update UI state to paused
+				shouldBePlaying = false
 				sendPausedStateEvent()
+				
+				// CRITICAL: Update lock screen controls to show paused state
+				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
+				log("🔴 Lock screen controls updated to show PAUSED state")
 			}
 		case .ended:
-			log("Audio session interruption ended")
+			log("🟡 Audio session interruption ended")
 			
 			// Per Apple guidelines: Check if we were playing before interruption
 			guard wasPlayingBeforeInterruption else {
-				log("Was not playing before interruption, no action needed")
+				log("🟡 Was not playing before interruption, no action needed")
 				wasPlayingBeforeInterruption = false
 				return
 			}
@@ -163,10 +169,10 @@ class AudioPro: RCTEventEmitter {
 			
 			// Check for shouldResume flag as per Apple guidelines
 			if options.contains(.shouldResume) {
-				log("Interruption ended with shouldResume flag, automatically resuming playback")
+				log("🟢 Interruption ended WITH shouldResume flag - auto-resuming playback")
 				attemptResumeAfterInterruption()
 			} else {
-				log("Interruption ended without shouldResume flag, updating UI to paused state")
+				log("🔴 Interruption ended WITHOUT shouldResume flag - staying paused per Apple guidelines")
 				// Per Apple guidelines: Don't auto-resume if shouldResume flag is not present
 				// Update internal state and UI to reflect that we're paused, not playing
 				shouldBePlaying = false
@@ -178,7 +184,7 @@ class AudioPro: RCTEventEmitter {
 				// Update now playing info to reflect paused state
 				updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0.0)
 				
-				log("App is now in paused state, waiting for user interaction to resume")
+				log("🔴 UI updated to PAUSED state - user must manually resume")
 			}
 
 			// Reset the flag
