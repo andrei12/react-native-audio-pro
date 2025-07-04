@@ -152,6 +152,7 @@ class AudioPro: RCTEventEmitter {
 			// We still fall back to checking the current rate to cover edge-cases in
 			// which `shouldBePlaying` might be out-of-sync.
 			wasPlayingBeforeInterruption = shouldBePlaying || (player?.rate ?? 0) != 0
+			log("🔴 wasPlayingBeforeInterruption = \(wasPlayingBeforeInterruption) (shouldBePlaying=\(shouldBePlaying), rate=\(player?.rate ?? 0))")
 
 			if wasPlayingBeforeInterruption {
 				// Pause playback but don't emit state change
@@ -180,6 +181,8 @@ class AudioPro: RCTEventEmitter {
 			// Get the interruption options (may not be present for all interruption types)
 			let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
 			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
+			
+			log("🟡 Interruption options: \(optionsValue ?? 0), shouldResume: \(options.contains(.shouldResume))")
 			
 			// Check for shouldResume flag as per Apple guidelines
 			if options.contains(.shouldResume) {
@@ -258,9 +261,15 @@ class AudioPro: RCTEventEmitter {
 	/// Per Apple's Audio Guidelines for User-Controlled Playback Apps
 	private func attemptResumeAfterInterruption() {
 		do {
-			// Reactivate the audio session
-			try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-			log("Audio session reactivated successfully after interruption")
+			let session = AVAudioSession.sharedInstance()
+			
+			// Check if session is already active
+			if !session.isOtherAudioPlaying {
+				try session.setActive(true, options: .notifyOthersOnDeactivation)
+				log("Audio session reactivated successfully after interruption")
+			} else {
+				log("Other audio is playing, keeping session active")
+			}
 			
 			// Ensure we still have a valid player and track
 			guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
@@ -295,7 +304,7 @@ class AudioPro: RCTEventEmitter {
 				if self.shouldBePlaying, let player = self.player, player.rate == 0 {
 					self.log("Resume watchdog: rate still 0 after 3s – retrying play() once")
 					player.play()
-					// If it still fails after retry, we’ll leave UI in paused state for user.
+					// If it still fails after retry, we'll leave UI in paused state for user.
 					DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
 						guard let self = self else { return }
 						if self.shouldBePlaying, let player = self.player, player.rate == 0 {
@@ -1286,6 +1295,10 @@ class AudioPro: RCTEventEmitter {
 		// Disable next/previous track commands
 		commandCenter.nextTrackCommand.isEnabled = false
 		commandCenter.previousTrackCommand.isEnabled = false
+		
+		// CRITICAL: Register for remote control events to receive background interruption notifications
+		// This is required for timer interruptions to work properly when app is backgrounded
+		UIApplication.shared.beginReceivingRemoteControlEvents()
 		
 		isRemoteCommandCenterSetup = true
 	}
