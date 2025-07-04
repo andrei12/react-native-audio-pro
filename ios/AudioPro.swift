@@ -70,6 +70,7 @@ class AudioPro: RCTEventEmitter {
 	private var lastEmittedState: String = ""
 	private var wasPlayingBeforeInterruption: Bool = false
 	private var pendingStartTimeMs: Double? = nil
+	private var isExplicitlyStopped: Bool = false  // Track if user explicitly stopped (vs just paused)
 
 	////////////////////////////////////////////////////////////
 	// MARK: - React Native Event Emitter Overrides
@@ -394,6 +395,8 @@ class AudioPro: RCTEventEmitter {
 		isInErrorState = false
 		// Reset last emitted state when playing a new track
 		lastEmittedState = ""
+		// Reset explicitly stopped flag when playing
+		isExplicitlyStopped = false
 		currentTrack = track
 		settingDebug = options["debug"] as? Bool ?? false
 		settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
@@ -483,6 +486,7 @@ class AudioPro: RCTEventEmitter {
 	@objc(pause)
 	func pause() {
 		shouldBePlaying = false
+		isExplicitlyStopped = false  // This is a pause, not a stop
 		player?.pause()
 		stopTimer()
 		sendPausedStateEvent()
@@ -491,11 +495,12 @@ class AudioPro: RCTEventEmitter {
 
 	@objc(resume)
 	func resume() {
-		log("[Resume] Called. player=\(player != nil), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
+		log("[Resume] Called. player=\(player != nil), isExplicitlyStopped=\(isExplicitlyStopped), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
 		
-		// If we have a track but no valid player/item (stopped state), restart playback
-		if let track = currentTrack, (player == nil || player?.currentItem == nil) {
-			log("[Resume] Restarting playback from stopped state")
+		// Only restart playback if we were explicitly stopped (not just paused)
+		if let track = currentTrack, isExplicitlyStopped && (player == nil || player?.currentItem == nil) {
+			log("[Resume] Restarting playback from explicitly stopped state")
+			isExplicitlyStopped = false  // Reset the flag
 			// Ensure audio session is configured before restarting
 			do {
 				try configureAudioSession()
@@ -506,6 +511,15 @@ class AudioPro: RCTEventEmitter {
 			}
 			// Use the existing track with autoPlay enabled
 			let options: NSDictionary = ["autoPlay": true]
+			play(track: track, options: options)
+			return
+		}
+		
+		// Handle case where player was cleared but we're not explicitly stopped (could be from interruption)
+		if player == nil && !isExplicitlyStopped, let track = currentTrack {
+			log("[Resume] Player cleared but not explicitly stopped, recreating player")
+			// Recreate the player without restarting track
+			let options: NSDictionary = ["autoPlay": true, "debug": settingDebug]
 			play(track: track, options: options)
 			return
 		}
@@ -589,6 +603,7 @@ class AudioPro: RCTEventEmitter {
 		// Reset last emitted state when stopping playback
 		lastEmittedState = ""
 		shouldBePlaying = false
+		isExplicitlyStopped = true  // Mark as explicitly stopped
 
 		pendingStartTimeMs = nil
 
@@ -628,6 +643,7 @@ class AudioPro: RCTEventEmitter {
 		// Reset last emitted state
 		lastEmittedState = ""
 		shouldBePlaying = false
+		isExplicitlyStopped = false
 
 		// Reset volume to default
 		activeVolume = 1.0
