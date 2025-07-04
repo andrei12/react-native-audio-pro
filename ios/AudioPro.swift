@@ -93,6 +93,8 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	private func setupAudioSessionInterruptionObserver() {
+		print("🚨 [AudioPro] SETTING UP INTERRUPTION OBSERVER")
+		
 		// Register for audio session interruption notifications
 		NotificationCenter.default.addObserver(
 			self,
@@ -109,6 +111,7 @@ class AudioPro: RCTEventEmitter {
 			object: nil
 		)
 
+		print("🚨 [AudioPro] INTERRUPTION OBSERVER SETUP COMPLETE")
 		log("Registered for audio session interruption and media server reset notifications")
 	}
 
@@ -128,14 +131,19 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	@objc private func handleAudioSessionInterruption(_ notification: Notification) {
+		// UNCONDITIONAL logging to verify this handler is called
+		print("🚨 [AudioPro] INTERRUPTION HANDLER CALLED!")
+		
 		guard let userInfo = notification.userInfo,
 			  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
 			  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+			print("🚨 [AudioPro] INTERRUPTION: Invalid notification data")
 			return
 		}
 
 		switch type {
 		case .began:
+			print("🚨 [AudioPro] INTERRUPTION BEGAN!")
 			log("🔴 Audio session interruption began (timer/call/alarm)")
 			// Remember if we were playing when interruption began
 			wasPlayingBeforeInterruption = player?.rate != 0
@@ -154,6 +162,7 @@ class AudioPro: RCTEventEmitter {
 				log("🔴 Lock screen controls updated to show PAUSED state")
 			}
 		case .ended:
+			print("🚨 [AudioPro] INTERRUPTION ENDED!")
 			log("🟡 Audio session interruption ended")
 			
 			// Per Apple guidelines: Check if we were playing before interruption
@@ -491,6 +500,7 @@ class AudioPro: RCTEventEmitter {
 
 	@objc(pause)
 	func pause() {
+		print("🚨 [AudioPro] PAUSE CALLED")
 		log("[Pause] Called. player=\(player != nil), shouldBePlaying=\(shouldBePlaying), player?.rate=\(String(describing: player?.rate))")
 		shouldBePlaying = false
 		isExplicitlyStopped = false  // This is a pause, not a stop
@@ -498,6 +508,7 @@ class AudioPro: RCTEventEmitter {
 		stopTimer()
 		sendPausedStateEvent()
 		updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0)
+		print("🚨 [AudioPro] PAUSE COMPLETED, rate=\(String(describing: player?.rate))")
 		log("[Pause] Completed. player=\(player != nil), player?.rate=\(String(describing: player?.rate))")
 	}
 
