@@ -485,58 +485,49 @@ class AudioPro: RCTEventEmitter {
 
 	@objc(pause)
 	func pause() {
+		log("[Pause] Called. player=\(player != nil), shouldBePlaying=\(shouldBePlaying), player?.rate=\(String(describing: player?.rate))")
 		shouldBePlaying = false
 		isExplicitlyStopped = false  // This is a pause, not a stop
 		player?.pause()
 		stopTimer()
 		sendPausedStateEvent()
 		updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0)
+		log("[Pause] Completed. player=\(player != nil), player?.rate=\(String(describing: player?.rate))")
 	}
 
 	@objc(resume)
 	func resume() {
-		log("[Resume] Called. player=\(player != nil), isExplicitlyStopped=\(isExplicitlyStopped), player?.rate=\(String(describing: player?.rate)), player?.currentItem=\(String(describing: player?.currentItem))")
+		log("[Resume] Called. player=\(player != nil), isExplicitlyStopped=\(isExplicitlyStopped), shouldBePlaying=\(shouldBePlaying), player?.rate=\(String(describing: player?.rate))")
 		
-		// Only restart playback if we were explicitly stopped (not just paused)
-		if let track = currentTrack, isExplicitlyStopped && (player == nil || player?.currentItem == nil) {
-			log("[Resume] Restarting playback from explicitly stopped state")
-			isExplicitlyStopped = false  // Reset the flag
-			// Ensure audio session is configured before restarting
-			do {
-				try configureAudioSession()
-			} catch {
-				log("Failed to configure audio session on resume: \(error.localizedDescription)")
-				onError("Cannot resume: failed to configure audio session")
-				return
-			}
-			// Use the existing track with autoPlay enabled
-			let options: NSDictionary = ["autoPlay": true]
-			play(track: track, options: options)
-			return
-		}
-		
-		// Handle case where player was cleared but we're not explicitly stopped (could be from interruption)
-		if player == nil && !isExplicitlyStopped, let track = currentTrack {
-			log("[Resume] Player cleared but not explicitly stopped, recreating player")
-			// Recreate the player without restarting track
-			let options: NSDictionary = ["autoPlay": true, "debug": settingDebug]
-			play(track: track, options: options)
-			return
-		}
-		
-		// Validate we have a player and track before attempting resume
-		guard let player = player, let _ = player.currentItem, let _ = currentTrack else {
-			log("[Resume] No player, item, or track available for resume")
+		// If we don't have a track, nothing to resume
+		guard let _ = currentTrack else {
+			log("[Resume] No track to resume")
 			onError("Cannot resume: no track loaded")
 			return
 		}
 		
+		// ONLY restart from scratch if explicitly stopped (user called stop())
+		if isExplicitlyStopped {
+			log("[Resume] Restarting from explicit stop")
+			isExplicitlyStopped = false
+			let options: NSDictionary = ["autoPlay": true, "debug": settingDebug]
+			play(track: currentTrack!, options: options)
+			return
+		}
+		
+		// For everything else (pause, interruptions), just resume the existing player
+		// If player is nil but we weren't explicitly stopped, something went wrong - restart
+		guard let player = player, let _ = player.currentItem else {
+			log("[Resume] Player lost unexpectedly, restarting")
+			let options: NSDictionary = ["autoPlay": true, "debug": settingDebug]
+			play(track: currentTrack!, options: options)
+			return
+		}
+		
+		log("[Resume] Simple resume - just starting existing player")
 		shouldBePlaying = true
 		
-		// Send loading state immediately so UI can update
-		sendStateEvent(state: STATE_LOADING, position: 0, duration: 0, track: currentTrack)
-		
-		// Try to reactivate the audio session if needed in background
+		// Try to reactivate audio session and resume
 		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
 			guard let self = self else { return }
 			
@@ -544,51 +535,38 @@ class AudioPro: RCTEventEmitter {
 				let session = AVAudioSession.sharedInstance()
 				if !session.isOtherAudioPlaying {
 					try session.setActive(true, options: .notifyOthersOnDeactivation)
-					self.log("[Resume] AVAudioSession activated successfully.")
+					self.log("[Resume] Audio session reactivated")
 				}
 				
-				// Return to main queue for playback
 				DispatchQueue.main.async {
-					// Double-check we still have a valid player
+					// Double-check player is still valid
 					guard let player = self.player, let _ = player.currentItem else {
-						self.log("[Resume] Player became invalid during session activation")
+						self.log("[Resume] Player lost during session activation")
 						return
 					}
 					
-					self.log("[Resume] Before player?.play(). player=\(player), player?.rate=\(String(describing: player.rate)), player?.currentItem=\(String(describing: player.currentItem))")
-					
-					// Start playback
+					// Just resume playback
 					player.play()
+					self.log("[Resume] Player resumed, rate=\(player.rate)")
 					
-					self.log("[Resume] After player?.play(). player=\(player), player?.rate=\(String(describing: player.rate)), player?.currentItem=\(String(describing: player.currentItem))")
-					
-					// Update lock screen controls with current playback state
+					// Update UI and controls
 					let currentTime = player.currentTime().seconds
 					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
 					self.updateNowPlayingInfo(time: validTime, rate: 1.0)
-					
-					// Ensure next/prev controls are properly updated
 					self.updateNextPrevControlsState()
-					
-					// Force start progress timer to ensure state updates
 					self.startProgressTimer()
+					
+					// Send playing state
+					self.sendPlayingStateEvent()
 				}
 			} catch {
 				DispatchQueue.main.async {
-					self.log("[Resume] Failed to reactivate audio session: \(error.localizedDescription)")
-					
-					// Try to continue anyway, but with fallback handling
-					guard let player = self.player else {
-						self.onError("Player lost during audio session error")
-						return
-					}
-					
+					self.log("[Resume] Audio session activation failed: \(error.localizedDescription)")
+					// Still try to resume
+					guard let player = self.player else { return }
 					player.play()
-					let currentTime = player.currentTime().seconds
-					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
-					self.updateNowPlayingInfo(time: validTime, rate: 1.0)
-					self.updateNextPrevControlsState()
 					self.startProgressTimer()
+					self.sendPlayingStateEvent()
 				}
 			}
 		}
@@ -598,6 +576,7 @@ class AudioPro: RCTEventEmitter {
 	/// such as artwork and remote control settings. This allows the lock screen/Control Center
 	/// to continue displaying the track details for a potential resume.
 	@objc func stop() {
+		log("[Stop] Called. player=\(player != nil), shouldBePlaying=\(shouldBePlaying)")
 		// Reset error state when explicitly stopping
 		isInErrorState = false
 		// Reset last emitted state when stopping playback
@@ -1196,7 +1175,7 @@ class AudioPro: RCTEventEmitter {
 		// Add play command
 		commandCenter.playCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
-			self.log("Remote command: play")
+			self.log("🟢 Remote command: PLAY (from lock screen/control center)")
 			
 			// Can always resume if we have a track, even from stopped state
 			if self.currentTrack != nil {
@@ -1211,7 +1190,7 @@ class AudioPro: RCTEventEmitter {
 		// Add pause command
 		commandCenter.pauseCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
-			self.log("Remote command: pause")
+			self.log("🔴 Remote command: PAUSE (from lock screen/control center)")
 			self.pause()
 			return .success
 		}
@@ -1227,7 +1206,7 @@ class AudioPro: RCTEventEmitter {
 		// Add toggle play/pause command
 		commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
 			guard let self = self else { return .commandFailed }
-			self.log("Remote command: togglePlayPause")
+			self.log("🔄 Remote command: TOGGLE PLAY/PAUSE (from lock screen/control center)")
 			
 			// Handle stopped state (no player) - can resume if we have a track
 			if self.player == nil {
@@ -1248,8 +1227,10 @@ class AudioPro: RCTEventEmitter {
 			}
 			
 			if player.rate == 0 || !self.shouldBePlaying {
+				self.log("🔄 Toggle -> RESUME")
 				self.resume()
 			} else {
+				self.log("🔄 Toggle -> PAUSE")
 				self.pause()
 			}
 			return .success
