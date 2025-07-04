@@ -21,6 +21,9 @@ RCT_EXTERN_METHOD(ambientPause)
 RCT_EXTERN_METHOD(ambientResume)
 RCT_EXTERN_METHOD(ambientSeekTo:(double)positionMs)
 
+RCT_EXTERN_METHOD(testInterruptionHandling)
+RCT_EXTERN_METHOD(testAudioSessionState)
+
 + (BOOL)requiresMainQueueSetup
 {
   return NO;

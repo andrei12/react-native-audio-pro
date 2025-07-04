@@ -81,7 +81,20 @@ class AudioPro: RCTEventEmitter {
 		// Set up interruption observer immediately when module is created
 		// This ensures we can handle interruptions even before playback starts
 		setupAudioSessionInterruptionObserver()
+		
+		// Test that NotificationCenter is working at all
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(testNotificationReceived(_:)),
+			name: UIApplication.didBecomeActiveNotification,
+			object: nil
+		)
+		
 		log("AudioPro module initialized with interruption observer")
+	}
+	
+	@objc private func testNotificationReceived(_ notification: Notification) {
+		print("🚨 [AudioPro] TEST: App became active - NotificationCenter is working!")
 	}
 
 	////////////////////////////////////////////////////////////
@@ -107,6 +120,20 @@ class AudioPro: RCTEventEmitter {
 	private func setupAudioSessionInterruptionObserver() {
 		print("🚨 [AudioPro] SETTING UP INTERRUPTION OBSERVER")
 		
+		// Check if app has background audio capabilities
+		if let backgroundModes = Bundle.main.infoDictionary?["UIBackgroundModes"] as? [String] {
+			let hasAudioBackground = backgroundModes.contains("audio")
+			print("🚨 [AudioPro] Background modes: \(backgroundModes), has audio: \(hasAudioBackground)")
+		} else {
+			print("🚨 [AudioPro] WARNING: No UIBackgroundModes found in Info.plist!")
+		}
+		
+		// Check current audio session state
+		let session = AVAudioSession.sharedInstance()
+		print("🚨 [AudioPro] Current audio session category: \(session.category.rawValue)")
+		print("🚨 [AudioPro] Current audio session is active: \(session.isOtherAudioPlaying)")
+		print("🚨 [AudioPro] Current audio session mode: \(session.mode.rawValue)")
+		
 		// Register for audio session interruption notifications
 		NotificationCenter.default.addObserver(
 			self,
@@ -120,6 +147,14 @@ class AudioPro: RCTEventEmitter {
 			self,
 			selector: #selector(handleMediaServicesReset(_:)),
 			name: AVAudioSession.mediaServicesWereResetNotification,
+			object: nil
+		)
+		
+		// Also register for route change notifications to see if those work
+		NotificationCenter.default.addObserver(
+			self,
+			selector: #selector(handleRouteChange(_:)),
+			name: AVAudioSession.routeChangeNotification,
 			object: nil
 		)
 
@@ -228,52 +263,6 @@ class AudioPro: RCTEventEmitter {
 		}
 	}
 	
-	/// Handles media server reset per Apple's Audio Guidelines
-	/// The media server provides audio functionality through a shared server process.
-	/// When it resets, all audio objects become orphaned and must be recreated.
-	@objc private func handleMediaServicesReset(_ notification: Notification) {
-		log("Media services were reset - recreating audio objects per Apple guidelines")
-		
-		// Remember current state
-		let wasPlaying = shouldBePlaying
-		let currentPosition = player?.currentTime().seconds ?? 0
-		let savedTrack = currentTrack
-		
-		// Per Apple guidelines: Dispose of orphaned audio objects and create new ones
-		cleanup(emitStateChange: false, clearTrack: false)
-		
-		// Reset internal audio states as required by Apple
-		shouldBePlaying = false
-		wasPlayingBeforeInterruption = false
-		isInErrorState = false
-		lastEmittedState = ""
-		
-		// If we had a track and were playing, attempt to restore playback
-		if let track = savedTrack, wasPlaying {
-			log("Attempting to restore playback after media server reset")
-			
-			// Recreate the player with the same track
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-				guard let self = self else { return }
-				
-				// Use the existing play method to recreate everything
-				let options: NSDictionary = [
-					"autoPlay": false, // Don't auto-play, let user decide
-					"debug": self.settingDebug
-				]
-				
-				self.play(track: track, options: options)
-				
-				// Update UI to show that manual restart is needed
-				self.sendPausedStateEvent()
-				self.log("Media server reset recovery complete - manual restart required")
-			}
-		} else {
-			// No active playback to restore
-			sendStateEvent(state: STATE_IDLE, position: 0, duration: 0, track: nil)
-		}
-	}
-	
 	/// Attempts to resume playback after an interruption when shouldResume flag is present
 	/// Per Apple's Audio Guidelines for User-Controlled Playback Apps
 	private func attemptResumeAfterInterruption() {
@@ -345,6 +334,82 @@ class AudioPro: RCTEventEmitter {
 			
 			// Emit error to inform the app
 			emitPlaybackError("Unable to resume audio playback")
+		}
+	}
+	
+	/// Handles media server reset per Apple's Audio Guidelines
+	/// The media server provides audio functionality through a shared server process.
+	/// When it resets, all audio objects become orphaned and must be recreated.
+	@objc private func handleMediaServicesReset(_ notification: Notification) {
+		log("Media services were reset - recreating audio objects per Apple guidelines")
+		
+		// Remember current state
+		let wasPlaying = shouldBePlaying
+		let currentPosition = player?.currentTime().seconds ?? 0
+		let savedTrack = currentTrack
+		
+		// Per Apple guidelines: Dispose of orphaned audio objects and create new ones
+		cleanup(emitStateChange: false, clearTrack: false)
+		
+		// Reset internal audio states as required by Apple
+		shouldBePlaying = false
+		wasPlayingBeforeInterruption = false
+		isInErrorState = false
+		lastEmittedState = ""
+		
+		// If we had a track and were playing, attempt to restore playback
+		if let track = savedTrack, wasPlaying {
+			log("Attempting to restore playback after media server reset")
+			
+			// Recreate the player with the same track
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+				guard let self = self else { return }
+				
+				// Use the existing play method to recreate everything
+				let options: NSDictionary = [
+					"autoPlay": false, // Don't auto-play, let user decide
+					"debug": self.settingDebug
+				]
+				
+				self.play(track: track, options: options)
+				
+				// Update UI to show that manual restart is needed
+				self.sendPausedStateEvent()
+				self.log("Media server reset recovery complete - manual restart required")
+			}
+		} else {
+			// No active playback to restore
+			sendStateEvent(state: STATE_IDLE, position: 0, duration: 0, track: nil)
+		}
+	}
+	
+	@objc private func handleRouteChange(_ notification: Notification) {
+		print("🚨 [AudioPro] ROUTE CHANGE DETECTED!")
+		guard let userInfo = notification.userInfo,
+			  let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+			  let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+			print("🚨 [AudioPro] Route change: Invalid notification data")
+			return
+		}
+		
+		print("🚨 [AudioPro] Route change reason: \(reason.rawValue)")
+		switch reason {
+		case .newDeviceAvailable:
+			print("🚨 [AudioPro] New audio device available")
+		case .oldDeviceUnavailable:
+			print("🚨 [AudioPro] Audio device disconnected")
+		case .categoryChange:
+			print("🚨 [AudioPro] Audio category changed")
+		case .override:
+			print("🚨 [AudioPro] Audio route overridden")
+		case .wakeFromSleep:
+			print("🚨 [AudioPro] Device woke from sleep")
+		case .noSuitableRouteForCategory:
+			print("🚨 [AudioPro] No suitable route for category")
+		case .routeConfigurationChange:
+			print("🚨 [AudioPro] Route configuration changed")
+		@unknown default:
+			print("🚨 [AudioPro] Unknown route change reason")
 		}
 	}
 
@@ -1517,15 +1582,25 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	private func configureAudioSession() throws {
+		print("🚨 [AudioPro] CONFIGURING AUDIO SESSION")
+		
 		// Configure audio session for playback
 		let session = AVAudioSession.sharedInstance()
+		
+		// Log current state before configuration
+		print("🚨 [AudioPro] Before config - Category: \(session.category.rawValue), Mode: \(session.mode.rawValue), Active: \(session.isOtherAudioPlaying)")
 		
 		// Set playback category with options for better lock screen control support
 		// Use .allowAirPlay and .allowBluetoothA2DP for better device compatibility
 		try session.setCategory(.playback, mode: .default, options: [.allowAirPlay, .allowBluetoothA2DP])
+		print("🚨 [AudioPro] Category set to .playback")
 		
 		// Set audio session active synchronously to ensure it's ready before playback starts
 		try session.setActive(true, options: .notifyOthersOnDeactivation)
+		print("🚨 [AudioPro] Audio session activated")
+		
+		// Log final state after configuration
+		print("🚨 [AudioPro] After config - Category: \(session.category.rawValue), Mode: \(session.mode.rawValue), Active: \(session.isOtherAudioPlaying)")
 		
 		// Interruption observer is already set up in init()
 		log("Audio session configured for playback with enhanced options")
@@ -1664,5 +1739,33 @@ class AudioPro: RCTEventEmitter {
 				completion(image)
 			}
 		}.resume()
+	}
+
+	@objc(testInterruptionHandling)
+	func testInterruptionHandling() {
+		print("🚨 [AudioPro] MANUAL TEST: Simulating interruption handling")
+		
+		// Simulate what happens when we were playing before interruption
+		wasPlayingBeforeInterruption = true
+		shouldBePlaying = true
+		
+		// Simulate interruption ended with shouldResume
+		print("🚨 [AudioPro] MANUAL TEST: Calling attemptResumeAfterInterruption")
+		attemptResumeAfterInterruption()
+	}
+	
+	@objc(testAudioSessionState)
+	func testAudioSessionState() {
+		let session = AVAudioSession.sharedInstance()
+		print("🚨 [AudioPro] AUDIO SESSION STATE:")
+		print("  - Category: \(session.category.rawValue)")
+		print("  - Mode: \(session.mode.rawValue)")
+		print("  - Is active: \(session.isOtherAudioPlaying)")
+		print("  - Output volume: \(session.outputVolume)")
+		print("  - Sample rate: \(session.sampleRate)")
+		print("  - I/O buffer duration: \(session.ioBufferDuration)")
+		print("  - Current player rate: \(player?.rate ?? 0)")
+		print("  - Should be playing: \(shouldBePlaying)")
+		print("  - Has listeners: \(hasListeners)")
 	}
 }
