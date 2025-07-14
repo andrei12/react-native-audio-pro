@@ -467,22 +467,26 @@ class AudioPro: RCTEventEmitter {
 			self.isExplicitlyStopped = false
 			self.currentTrack = track
 
-			// Clear previous artwork and synchronously load new artwork if provided as a local file path.
-			// This is critical for AirPlay/CarPlay to prevent race conditions with network-loaded images.
-			self.currentArtworkImage = nil
-			if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
-				if artworkUrl.isFileURL {
-					do {
-						let imageData = try Data(contentsOf: artworkUrl)
-						self.currentArtworkImage = UIImage(data: imageData)
-						self.log("Successfully loaded local artwork from path.")
-					} catch {
-						self.log("Failed to load local artwork image from path: \(artworkPath)")
-					}
-				} else {
-					self.log("Artwork was not a local file URL. For best results with AirPlay, use a local image via require('./path/to/image.png').")
+					// Clear previous artwork and load new artwork if provided.
+		self.currentArtworkImage = nil
+		if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
+			if artworkUrl.isFileURL {
+				// Load local artwork synchronously (best for AirPlay)
+				do {
+					let imageData = try Data(contentsOf: artworkUrl)
+					self.currentArtworkImage = UIImage(data: imageData)
+					self.log("Successfully loaded local artwork from path.")
+				} catch {
+					self.log("Failed to load local artwork image from path: \(artworkPath)")
 				}
+			} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
+				// Load remote artwork asynchronously (required for network requests)
+				self.log("Loading remote artwork from: \(artworkPath)")
+				self.loadRemoteArtwork(from: artworkUrl)
+			} else {
+				self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
 			}
+		}
 
 			self.settingDebug = options["debug"] as? Bool ?? false
 			self.settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
@@ -1186,6 +1190,35 @@ class AudioPro: RCTEventEmitter {
 		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
 
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+	}
+
+	/// Loads artwork from a remote URL asynchronously and updates Now Playing info when loaded.
+	private func loadRemoteArtwork(from url: URL) {
+		URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
+			guard let self = self else { return }
+			
+			if let error = error {
+				self.log("Failed to load remote artwork: \(error.localizedDescription)")
+				return
+			}
+			
+			guard let data = data, let image = UIImage(data: data) else {
+				self.log("Failed to create image from remote artwork data")
+				return
+			}
+			
+			// Update artwork on main thread
+			DispatchQueue.main.async {
+				self.currentArtworkImage = image
+				self.log("Successfully loaded remote artwork")
+				// Refresh Now Playing info with the new artwork
+				self.setNowPlayingMetadata()
+				// Force update for external playback (AirPlay)
+				if self.player?.isExternalPlaybackActive == true {
+					self.updateNowPlayingPlaybackState()
+				}
+			}
+		}.resume()
 	}
 
 	/// Updates the dynamic playback state for the Now Playing info center.
