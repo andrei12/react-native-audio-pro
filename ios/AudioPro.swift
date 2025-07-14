@@ -235,9 +235,6 @@ class AudioPro: RCTEventEmitter {
 				
 				// Try to reactivate audio session and resume if we were playing
 				if shouldBePlaying {
-					// Automatically apply SwiftAudioEx force refresh pattern after interruption
-					forceRefreshNowPlayingInfoInternal()
-					
 					DispatchQueue.global(qos: .userInitiated).async { [weak self] in
 						guard let self = self else { return }
 						
@@ -333,11 +330,6 @@ class AudioPro: RCTEventEmitter {
 				]
 				
 				self.play(track: track, options: options)
-				
-				// Automatically apply SwiftAudioEx force refresh pattern after media server reset
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-					self?.forceRefreshNowPlayingInfoInternal()
-				}
 				
 				// Update UI to show that manual restart is needed
 				self.sendPausedStateEvent()
@@ -504,29 +496,24 @@ class AudioPro: RCTEventEmitter {
 			self.isExplicitlyStopped = false
 			self.currentTrack = track
 
-			// Clear previous artwork and load new artwork if provided.
+			// Clear previous artwork but don't wait for new artwork
 			self.currentArtworkImage = nil
 			
-			// Create a completion handler that ensures setNowPlayingMetadata() is called only once
-			// AND ensures player setup continues regardless of artwork loading outcome
-			let artworkLoadingComplete: () -> Void = {
-				DispatchQueue.main.async {
-					self.log("[NowPlayingInfo] Setting nowPlayingInfo artwork from artwork completion: \(self.currentArtworkImage != nil ? "loaded" : "none")")
-					self.setNowPlayingMetadata()
-					
-					// Continue with player setup after artwork loading is complete
-					self.continuePlayerSetup(track: track, options: options)
-				}
+			// IMMEDIATE: Set basic metadata first (never block for artwork)
+			self.setBasicNowPlayingMetadata()
+			
+			// ASYNC: Load artwork in background without blocking
+			if let artworkPath = track["artwork"] as? String {
+				self.log("Loading artwork asynchronously: \(artworkPath)")
+				self.loadArtworkAsync(from: artworkPath)
+			} else {
+				// Set fallback artwork for AirPlay compatibility
+				self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
+				self.updateArtworkInNowPlayingInfo()
 			}
 			
-			if let artworkPath = track["artwork"] as? String {
-				self.log("Received artwork path: \(artworkPath)")
-				self.loadReactNativeArtwork(from: artworkPath, completion: artworkLoadingComplete)
-			} else {
-				self.log("No artwork path provided in track")
-				// If we reach here, artwork loading failed or no artwork was provided
-				artworkLoadingComplete()
-			}
+			// Continue with player setup immediately
+			self.continuePlayerSetup(track: track, options: options)
 		}
 	}
 
@@ -874,9 +861,6 @@ class AudioPro: RCTEventEmitter {
 		// Update the remote command center
 		self.setupRemoteTransportControls()
 		
-		// Note: setNowPlayingMetadata() is called once after artwork loading completes
-		// This ensures artwork is included and prevents Samsung TV metadata conflicts
-		
 		// Start playback if autoPlay is true
 		if autoPlay {
 			self.player?.play()
@@ -893,11 +877,6 @@ class AudioPro: RCTEventEmitter {
 		} else {
 			self.shouldBePlaying = false
 			self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
-		}
-		
-		// Automatically ensure fresh Now Playing values after player setup (SwiftAudioEx pattern)
-		DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-			self?.updateNowPlayingPlaybackValues()
 		}
 	}
 
@@ -969,7 +948,7 @@ class AudioPro: RCTEventEmitter {
 					player.play()
 					self.log("[Resume] Player resumed, rate=\(player.rate)")
 					
-					// Update UI and controls using SwiftAudioEx pattern
+					// Update UI and controls
 					self.updateNowPlayingPlaybackValues()
 					self.updateNextPrevControlsState()
 					self.startProgressTimer()
@@ -1332,11 +1311,8 @@ class AudioPro: RCTEventEmitter {
 				case .readyToPlay:
 					log("Player item ready to play")
 
-					// Automatically ensure fresh metadata using SwiftAudioEx pattern when player is ready
-					// This ensures Samsung TV always gets properly formatted metadata
-					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-						self?.loadNowPlayingMetaValues()
-					}
+					// Ensure Now Playing info is properly set when player is ready
+					updateNowPlayingPlaybackValues()
 					
 					// If we're supposed to be playing, ensure we're actually playing
 					if shouldBePlaying {
@@ -1377,10 +1353,8 @@ class AudioPro: RCTEventEmitter {
 				sendPlayingStateEvent()
 				startProgressTimer()
 				
-				// Automatically refresh Now Playing values when playback resumes (SwiftAudioEx pattern)
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-					self?.updateNowPlayingPlaybackValues()
-				}
+				// Update Now Playing values when playback resumes
+				updateNowPlayingPlaybackValues()
 			}
 			
 		case "playbackBufferFull":
@@ -1407,7 +1381,7 @@ class AudioPro: RCTEventEmitter {
 						stopTimer()
 					}
 					
-					// Automatically update Now Playing values when paused (SwiftAudioEx pattern)
+					// Update Now Playing values when paused
 					updateNowPlayingPlaybackValues()
 				} else {
 					if shouldBePlaying && hasListeners {
@@ -1416,37 +1390,23 @@ class AudioPro: RCTEventEmitter {
 						startProgressTimer()
 					}
 					
-					// Automatically update Now Playing values when playing (SwiftAudioEx pattern)
+					// Update Now Playing values when playing
 					updateNowPlayingPlaybackValues()
 				}
 			}
 		case "externalPlaybackActive":
 			if let player = object as? AVPlayer {
 				if player.isExternalPlaybackActive {
-					log("[Samsung TV] 🎯 AirPlay/Samsung TV playback STARTED")
-					log("[SwiftAudioEx Pattern] Applying clear-and-reload metadata pattern for AirPlay")
+					log("[AirPlay] 🎯 AirPlay/Samsung TV playback STARTED")
 					
-					// SwiftAudioEx Pattern: Clear existing metadata and reload from scratch
-					// This ensures Samsung TV gets fresh, properly formatted metadata
-					DispatchQueue.main.async { [weak self] in
-						guard let self = self else { return }
-						
-						// Step 1: Clear existing Now Playing info
-						MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-						self.log("[SwiftAudioEx Pattern] Cleared existing metadata for AirPlay")
-						
-						// Step 2: Wait for AirPlay connection to stabilize (Samsung TV timing)
-						DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-							guard let self = self else { return }
-							
-							// Step 3: Rebuild metadata from scratch
-							self.loadNowPlayingMetaValues()
-							self.log("[Samsung TV] ✅ AirPlay metadata rebuilt using SwiftAudioEx pattern")
-						}
+					// Simple refresh of Now Playing info for AirPlay
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+						self?.updateNowPlayingPlaybackValues()
 					}
 				} else {
-					log("[Samsung TV] 📺 AirPlay/Samsung TV playback ENDED - returning to local playback")
-					// Safe to update metadata when returning from AirPlay
+					log("[AirPlay] 📺 AirPlay/Samsung TV playback ENDED - returning to local playback")
+					
+					// Simple refresh when returning from AirPlay
 					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
 						self?.updateNowPlayingPlaybackValues()
 					}
@@ -1688,11 +1648,6 @@ class AudioPro: RCTEventEmitter {
 			]
 			
 			self.play(track: track, options: options)
-			
-			// Automatically apply SwiftAudioEx force refresh pattern after error recovery
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-				self?.forceRefreshNowPlayingInfoInternal()
-			}
 		}
 	}
 
@@ -2099,52 +2054,9 @@ class AudioPro: RCTEventEmitter {
 		print("  - Has listeners: \(hasListeners)")
 	}
 
-	/// Forces a complete refresh of Now Playing metadata using SwiftAudioEx-inspired pattern
-	/// This clears existing metadata and rebuilds it from scratch - critical for Samsung TV compatibility
-	/// This is now called automatically during error recovery, interruption recovery, and AirPlay transitions
-	private func forceRefreshNowPlayingInfoInternal() {
-		log("[SwiftAudioEx Pattern] Force refreshing Now Playing metadata")
-		
-		DispatchQueue.main.async { [weak self] in
-			guard let self = self else { return }
-			
-			// Step 1: Clear existing Now Playing info (SwiftAudioEx pattern)
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-			
-			// Step 2: Small delay to ensure clearing is processed
-			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-				guard let self = self else { return }
-				
-				// Step 3: Rebuild metadata from scratch
-				self.loadNowPlayingMetaValues()
-			}
-		}
-	}
+
 	
-	/// Loads/reloads all Now Playing metadata values from current track (SwiftAudioEx pattern)
-	private func loadNowPlayingMetaValues() {
-		log("[SwiftAudioEx Pattern] Loading Now Playing meta values")
-		
-		// Ensure we have a current track
-		guard let _ = currentTrack else {
-			log("[SwiftAudioEx Pattern] No current track for metadata loading")
-			return
-		}
-		
-		// Ensure artwork is ready before setting metadata
-		if currentArtworkImage == nil {
-			log("[SwiftAudioEx Pattern] No artwork available, creating fallback")
-			currentArtworkImage = createSamsungTVFallbackArtwork()
-		}
-		
-		// Set metadata using our Samsung TV optimized method
-		setNowPlayingMetadata()
-		
-		// Update playback values separately (SwiftAudioEx pattern)
-		updateNowPlayingPlaybackValues()
-	}
-	
-	/// Updates only the dynamic playback values without touching metadata structure (SwiftAudioEx pattern)
+	/// Updates only the dynamic playback values without touching metadata structure
 	private func updateNowPlayingPlaybackValues() {
 		DispatchQueue.main.async { [weak self] in
 			guard let self = self else { return }
@@ -2168,7 +2080,7 @@ class AudioPro: RCTEventEmitter {
 					}
 				}
 				
-				self.log("[SwiftAudioEx Pattern] Updated playback values - rate: \(rate), time: \(validTime)")
+				self.log("[AirPlay Fix] Updated playback values - rate: \(rate), time: \(validTime)")
 			} else {
 				// If player is nil, reflect a stopped state
 				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
@@ -2201,5 +2113,114 @@ class AudioPro: RCTEventEmitter {
 			log("[SwiftAudioEx Check] ❌ ERROR: No UIBackgroundModes found in Info.plist!")
 			log("[SwiftAudioEx Check] AirPlay will not work without background audio capabilities")
 		}
+	}
+
+	/// Sets basic Now Playing metadata immediately (title, artist, live stream flag)
+	/// This is called immediately when play() starts - never blocks for artwork
+	private func setBasicNowPlayingMetadata() {
+		// Always set on main thread
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			log("[AirPlay Fix] Setting basic metadata immediately")
+			
+			// Create basic metadata dictionary
+			var nowPlayingInfo = [String: Any]()
+
+			// Set basic track info
+			if let trackInfo = self.currentTrack {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
+			} else {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
+			}
+			
+			// CRITICAL: Always set live stream flag for radio streams
+			nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+			
+			// Set initial playback values
+			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
+			
+			// Apply immediately - artwork will be added later
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+			
+			log("[AirPlay Fix] Basic metadata set - artwork will load asynchronously")
+		}
+	}
+
+	/// Loads artwork asynchronously in the background - never blocks playback or metadata setup
+	private func loadArtworkAsync(from artworkPath: String) {
+		DispatchQueue.global(qos: .background).async { [weak self] in
+			guard let self = self else { return }
+			
+			var loadedImage: UIImage?
+			
+			// Try to load from React Native asset
+			if artworkPath.hasPrefix("file://") {
+				let fileURL = URL(string: artworkPath)
+				loadedImage = fileURL.flatMap { UIImage(contentsOfFile: $0.path) }
+			} else if !artworkPath.hasPrefix("http") {
+				// React Native asset bundle
+				let assetName = artworkPath.replacingOccurrences(of: "file://", with: "")
+				loadedImage = UIImage(named: assetName)
+			} else {
+				// Remote URL - skip for now to avoid network delays
+				log("[AirPlay Fix] Skipping remote artwork to avoid delays: \(artworkPath)")
+			}
+			
+			// Resize to Samsung TV optimal size if loaded
+			if let image = loadedImage {
+				loadedImage = self.resizeImageForSamsungTV(image)
+				log("[AirPlay Fix] Artwork loaded and resized: \(image.size)")
+			} else {
+				// Use fallback for AirPlay compatibility
+				loadedImage = self.createSamsungTVFallbackArtwork()
+				log("[AirPlay Fix] Using fallback artwork for AirPlay compatibility")
+			}
+			
+			// Update artwork in Now Playing info
+			DispatchQueue.main.async { [weak self] in
+				guard let self = self else { return }
+				self.currentArtworkImage = loadedImage
+				self.updateArtworkInNowPlayingInfo()
+			}
+		}
+	}
+
+	/// Updates only the artwork in Now Playing info without disrupting existing metadata
+	private func updateArtworkInNowPlayingInfo() {
+		guard let artworkImage = currentArtworkImage else { return }
+		
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			// Get existing Now Playing info to preserve it
+			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+			
+			// Only update artwork - preserve all other metadata
+			let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in
+				return artworkImage
+			}
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+			
+			// Apply updated info
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+			
+			log("[AirPlay Fix] Artwork updated in Now Playing info without disrupting metadata")
+		}
+	}
+
+	/// Simple resize to Samsung TV optimal size (600x600)
+	private func resizeImageForSamsungTV(_ image: UIImage) -> UIImage {
+		let targetSize = CGSize(width: 600, height: 600)
+		
+		UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
+		image.draw(in: CGRect(origin: .zero, size: targetSize))
+		let resizedImage = UIGraphicsGetImageFromCurrentImageContext() ?? image
+		UIGraphicsEndImageContext()
+		
+		return resizedImage
 	}
 }
