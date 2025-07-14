@@ -1400,12 +1400,11 @@ class AudioPro: RCTEventEmitter {
 						// Emergency artwork setting - Samsung TV needs this
 						DispatchQueue.main.async { [weak self] in
 							guard let self = self else { return }
-							if let emergencyArtwork = self.currentArtworkImage ?? self.createSamsungTVFallbackArtwork() {
-								var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-								self.setSamsungTVCompatibleArtwork(image: emergencyArtwork, in: &nowPlayingInfo)
-								MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-								self.log("[Samsung TV] 🚑 Emergency artwork set during AirPlay activation")
-							}
+							let emergencyArtwork = self.currentArtworkImage ?? self.createSamsungTVFallbackArtwork()
+							var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+							self.setSamsungTVCompatibleArtwork(image: emergencyArtwork, in: &nowPlayingInfo)
+							MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+							self.log("[Samsung TV] 🚑 Emergency artwork set during AirPlay activation")
 						}
 					} else {
 						self.log("[Samsung TV] ✅ Artwork confirmed present during AirPlay activation")
