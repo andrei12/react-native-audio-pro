@@ -95,7 +95,10 @@ class AudioPro: RCTEventEmitter {
 			object: nil
 		)
 		
-		log("AudioPro module initialized with interruption observer")
+		// Automatically check background audio configuration on initialization (SwiftAudioEx pattern)
+		checkBackgroundAudioConfiguration()
+		
+		log("AudioPro module initialized with interruption observer and SwiftAudioEx patterns")
 	}
 	
 	@objc private func testNotificationReceived(_ notification: Notification) {
@@ -188,61 +191,90 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	@objc private func handleAudioSessionInterruption(_ notification: Notification) {
-		print("🚨 [AudioPro] INTERRUPTION HANDLER CALLED!")
-		
+		print("🚨 [AudioPro] INTERRUPTION DETECTED!")
 		guard let userInfo = notification.userInfo,
 			  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
 			  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-			print("🚨 [AudioPro] INTERRUPTION: Invalid notification data")
+			print("🚨 [AudioPro] Interruption: Invalid notification data")
 			return
 		}
 
+		print("🚨 [AudioPro] Interruption type: \(type.rawValue)")
+		
 		switch type {
 		case .began:
-			print("🚨 [AudioPro] INTERRUPTION BEGAN!")
-			log("🔴 Audio session interruption began - notifying React Native")
+			print("🚨 [AudioPro] Interruption BEGAN")
+			log("Audio session interruption began - pausing playback")
 			
-			// Determine if we were playing when the interruption began
-			let wasPlaying = shouldBePlaying || (player?.rate ?? 0) != 0
+			// Save current state
+			let wasPlaying = shouldBePlaying
 			
-			// Send interruption event to React Native with current state
-			let payload: [String: Any] = [
-				"wasPlaying": wasPlaying,
-				"currentTime": player?.currentTime().seconds ?? 0,
-				"interruptionType": "began"
-			]
+			// Pause playback but don't change shouldBePlaying flag
+			// This allows us to resume properly when interruption ends
+			player?.pause()
+			stopTimer()
+			sendPausedStateEvent()
 			
-			sendEvent(type: EVENT_TYPE_AUDIO_INTERRUPTION_BEGAN, track: currentTrack, payload: payload)
+			// Log the state for debugging
+			print("🚨 [AudioPro] Interruption began - wasPlaying: \(wasPlaying), shouldBePlaying: \(shouldBePlaying)")
 			
 		case .ended:
-			print("🚨 [AudioPro] INTERRUPTION ENDED!")
-			log("🟡 Audio session interruption ended - notifying React Native")
-			
-			// Get the interruption options
-			let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt
-			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
-			let shouldResume = options.contains(.shouldResume)
-			
-			// If the system suggests we should resume and we were previously playing,
-			// resume playback immediately from native code for a seamless experience.
-			if shouldResume && self.shouldBePlaying {
-				log("🟢 Interruption ended with shouldResume=true. Resuming playback natively.")
-				self.resume()
-			} else {
-				log("🟡 Interruption ended but not resuming automatically. Notifying React Native.")
+			print("🚨 [AudioPro] Interruption ENDED")
+			guard let userInfo = notification.userInfo,
+				  let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else {
+				print("🚨 [AudioPro] Interruption ended: No options provided")
+				return
 			}
 			
-			// Send interruption ended event to React Native regardless,
-			// so the JS layer can update its state if needed.
-			let payload: [String: Any] = [
-				"shouldResume": shouldResume,
-				"interruptionType": "ended",
-				"options": optionsValue ?? 0
-			]
+			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+			print("🚨 [AudioPro] Interruption options: \(options.rawValue)")
 			
-			sendEvent(type: EVENT_TYPE_AUDIO_INTERRUPTION_ENDED, track: currentTrack, payload: payload)
+			if options.contains(.shouldResume) {
+				print("🚨 [AudioPro] System suggests resuming playback")
+				log("Audio session interruption ended - attempting to resume playback")
+				
+				// Try to reactivate audio session and resume if we were playing
+				if shouldBePlaying {
+					// Automatically apply SwiftAudioEx force refresh pattern after interruption
+					forceRefreshNowPlayingInfoInternal()
+					
+					DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+						guard let self = self else { return }
+						
+						do {
+							let session = AVAudioSession.sharedInstance()
+							try session.setActive(true, options: .notifyOthersOnDeactivation)
+							print("🚨 [AudioPro] Audio session reactivated successfully")
+							
+							DispatchQueue.main.async {
+								// Resume playback
+								self.player?.play()
+								self.startProgressTimer()
+								self.sendPlayingStateEvent()
+								
+								print("🚨 [AudioPro] Playback resumed after interruption")
+							}
+						} catch {
+							print("🚨 [AudioPro] Failed to reactivate audio session: \(error.localizedDescription)")
+							DispatchQueue.main.async {
+								self.log("Failed to resume after interruption: \(error.localizedDescription)")
+								// Try resuming anyway
+								self.player?.play()
+								self.startProgressTimer()
+								self.sendPlayingStateEvent()
+							}
+						}
+					}
+				} else {
+					print("🚨 [AudioPro] Not resuming - shouldBePlaying is false")
+				}
+			} else {
+				print("🚨 [AudioPro] System does not suggest resuming")
+				log("Audio session interruption ended - manual resume required")
+			}
 			
 		@unknown default:
+			print("🚨 [AudioPro] Unknown interruption type: \(type.rawValue)")
 			break
 		}
 	}
@@ -301,6 +333,11 @@ class AudioPro: RCTEventEmitter {
 				]
 				
 				self.play(track: track, options: options)
+				
+				// Automatically apply SwiftAudioEx force refresh pattern after media server reset
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+					self?.forceRefreshNowPlayingInfoInternal()
+				}
 				
 				// Update UI to show that manual restart is needed
 				self.sendPausedStateEvent()
@@ -840,9 +877,6 @@ class AudioPro: RCTEventEmitter {
 		// Note: setNowPlayingMetadata() is called once after artwork loading completes
 		// This ensures artwork is included and prevents Samsung TV metadata conflicts
 		
-		// Update the now playing info with the playback state
-		self.updateNowPlayingPlaybackState()
-		
 		// Start playback if autoPlay is true
 		if autoPlay {
 			self.player?.play()
@@ -859,6 +893,11 @@ class AudioPro: RCTEventEmitter {
 		} else {
 			self.shouldBePlaying = false
 			self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
+		}
+		
+		// Automatically ensure fresh Now Playing values after player setup (SwiftAudioEx pattern)
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+			self?.updateNowPlayingPlaybackValues()
 		}
 	}
 
@@ -930,8 +969,8 @@ class AudioPro: RCTEventEmitter {
 					player.play()
 					self.log("[Resume] Player resumed, rate=\(player.rate)")
 					
-					// Update UI and controls
-					self.updateNowPlayingPlaybackState()
+					// Update UI and controls using SwiftAudioEx pattern
+					self.updateNowPlayingPlaybackValues()
 					self.updateNextPrevControlsState()
 					self.startProgressTimer()
 					
@@ -1135,7 +1174,7 @@ class AudioPro: RCTEventEmitter {
 		player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
 			guard let self = self else { return }
 			if completed {
-				self.updateNowPlayingPlaybackState()
+				self.updateNowPlayingPlaybackValues()
 				self.completeSeekingAndSendSeekCompleteNoticeEvent(newPosition: validPosition * 1000)
 
 				// Force update the now playing info to ensure controls work
@@ -1209,7 +1248,7 @@ class AudioPro: RCTEventEmitter {
 		log("Setting playback speed to ", speed)
 		player.rate = Float(speed)
 
-		updateNowPlayingPlaybackState()
+		updateNowPlayingPlaybackValues()
 
 		if hasListeners {
 			let playbackInfo = getPlaybackInfo()
@@ -1259,7 +1298,7 @@ class AudioPro: RCTEventEmitter {
 		player?.seek(to: .zero)
 		stopTimer()
 
-		updateNowPlayingPlaybackState()
+		updateNowPlayingPlaybackValues()
 
 		sendStateEvent(state: STATE_STOPPED, position: 0, duration: info.duration, track: currentTrack)
 
@@ -1293,22 +1332,11 @@ class AudioPro: RCTEventEmitter {
 				case .readyToPlay:
 					log("Player item ready to play")
 
-					// Only set metadata if it hasn't been set yet with basic track info
-					// This prevents duplicate metadata updates that can confuse Samsung TVs
-					let existingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
-					let hasTrackInfo = existingInfo?[MPMediaItemPropertyTitle] != nil
-					let hasArtwork = existingInfo?[MPMediaItemPropertyArtwork] != nil
-					
-					if !hasTrackInfo {
-						log("[Samsung TV] Setting metadata from player ready state - no existing metadata")
-						setNowPlayingMetadata()
-					} else if !hasArtwork && self.currentArtworkImage != nil {
-						log("[Samsung TV] Metadata exists but no artwork - Samsung TV needs artwork to prevent loading spinner")
-						setNowPlayingMetadata()
-					} else {
-						log("[Samsung TV] Metadata and artwork already set, preserving for Samsung TV compatibility")
+					// Automatically ensure fresh metadata using SwiftAudioEx pattern when player is ready
+					// This ensures Samsung TV always gets properly formatted metadata
+					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+						self?.loadNowPlayingMetaValues()
 					}
-					updateNowPlayingPlaybackState()
 					
 					// If we're supposed to be playing, ensure we're actually playing
 					if shouldBePlaying {
@@ -1348,6 +1376,11 @@ class AudioPro: RCTEventEmitter {
 				player?.play()
 				sendPlayingStateEvent()
 				startProgressTimer()
+				
+				// Automatically refresh Now Playing values when playback resumes (SwiftAudioEx pattern)
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+					self?.updateNowPlayingPlaybackValues()
+				}
 			}
 			
 		case "playbackBufferFull":
@@ -1373,54 +1406,49 @@ class AudioPro: RCTEventEmitter {
 						}
 						stopTimer()
 					}
+					
+					// Automatically update Now Playing values when paused (SwiftAudioEx pattern)
+					updateNowPlayingPlaybackValues()
 				} else {
 					if shouldBePlaying && hasListeners {
 						// Use sendPlayingStateEvent to ensure lastEmittedState is updated
 						sendPlayingStateEvent()
 						startProgressTimer()
 					}
+					
+					// Automatically update Now Playing values when playing (SwiftAudioEx pattern)
+					updateNowPlayingPlaybackValues()
 				}
 			}
 		case "externalPlaybackActive":
 			if let player = object as? AVPlayer {
 				if player.isExternalPlaybackActive {
 					log("[Samsung TV] 🎯 AirPlay/Samsung TV playback STARTED")
+					log("[SwiftAudioEx Pattern] Applying clear-and-reload metadata pattern for AirPlay")
 					
-					// CRITICAL Samsung TV timing: Do NOT update metadata when AirPlay activates
-					// Samsung TVs can lose artwork if metadata is changed during AirPlay activation
-					// The artwork was already set during play() - preserve it completely
-					
-					// Ensure we have valid artwork in the metadata before AirPlay activation
-					let currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
-					let hasArtwork = currentInfo?[MPMediaItemPropertyArtwork] != nil
-					
-					if !hasArtwork {
-						self.log("[Samsung TV] ❌ CRITICAL: No artwork detected during AirPlay activation!")
-						self.log("[Samsung TV] This will cause Samsung TV loading spinner issue")
-						// Emergency artwork setting - Samsung TV needs this
-						DispatchQueue.main.async { [weak self] in
+					// SwiftAudioEx Pattern: Clear existing metadata and reload from scratch
+					// This ensures Samsung TV gets fresh, properly formatted metadata
+					DispatchQueue.main.async { [weak self] in
+						guard let self = self else { return }
+						
+						// Step 1: Clear existing Now Playing info
+						MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+						self.log("[SwiftAudioEx Pattern] Cleared existing metadata for AirPlay")
+						
+						// Step 2: Wait for AirPlay connection to stabilize (Samsung TV timing)
+						DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
 							guard let self = self else { return }
-							let emergencyArtwork = self.currentArtworkImage ?? self.createSamsungTVFallbackArtwork()
-							var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
-							self.setSamsungTVCompatibleArtwork(image: emergencyArtwork, in: &nowPlayingInfo)
-							MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-							self.log("[Samsung TV] 🚑 Emergency artwork set during AirPlay activation")
+							
+							// Step 3: Rebuild metadata from scratch
+							self.loadNowPlayingMetaValues()
+							self.log("[Samsung TV] ✅ AirPlay metadata rebuilt using SwiftAudioEx pattern")
 						}
-					} else {
-						self.log("[Samsung TV] ✅ Artwork confirmed present during AirPlay activation")
-					}
-					
-					// Samsung TV specific timing: Wait longer before updating playback state
-					DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-						// Only update playback rate/time, not metadata structure
-						self?.updateNowPlayingPlaybackState()
-						self?.log("[Samsung TV] ✅ AirPlay activation complete - playback state updated with Samsung TV timing")
 					}
 				} else {
 					log("[Samsung TV] 📺 AirPlay/Samsung TV playback ENDED - returning to local playback")
 					// Safe to update metadata when returning from AirPlay
 					DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-						self?.updateNowPlayingPlaybackState()
+						self?.updateNowPlayingPlaybackValues()
 					}
 				}
 			}
@@ -1540,7 +1568,7 @@ class AudioPro: RCTEventEmitter {
 				self.setSamsungTVCompatibleArtwork(image: emergencyFallback, in: &nowPlayingInfo)
 			}
 
-			// Set initial playback state (will be updated by updateNowPlayingPlaybackState)
+			// Set initial playback state (will be updated by updateNowPlayingPlaybackValues)
 			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
 			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
 			
@@ -1598,41 +1626,7 @@ class AudioPro: RCTEventEmitter {
 		}
 	}
 
-	/// Updates the dynamic playback state for the Now Playing info center.
-	/// This must be called on the main thread.
-	private func updateNowPlayingPlaybackState() {
-		// This must be on the main thread
-		DispatchQueue.main.async { [weak self] in
-			guard let self = self else { return }
-		
-			// Retrieve the existing metadata dictionary.
-			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-			
-			// Update only the dynamic playback properties.
-			if let player = self.player {
-				let rate = player.rate
-				let time = player.currentTime().seconds
-				let validTime = (time.isNaN || time.isInfinite) ? 0 : time
 
-				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
-				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
-
-				if let currentItem = player.currentItem {
-					let itemDuration = currentItem.duration.seconds
-					if !itemDuration.isNaN && !itemDuration.isInfinite {
-						nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
-					}
-				}
-			} else {
-				// If player is nil, reflect a stopped state.
-				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
-				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
-			}
-			
-			// Set the updated dictionary back to the Now Playing center.
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-		}
-	}
 
 	/**
 	 * Emits a PLAYBACK_ERROR event without transitioning to the ERROR state.
@@ -1663,25 +1657,43 @@ class AudioPro: RCTEventEmitter {
 	 * For non-critical errors that don't require state transition, use emitPlaybackError() instead.
 	 */
 	func onError(_ errorMessage: String) {
-		// If we're already in an error state, just log and return
-		if isInErrorState {
-			log("Already in error state, ignoring additional error: \(errorMessage)")
-			return
-		}
-
-		if hasListeners {
-			// First, emit PLAYBACK_ERROR event with error details
-			let errorPayload: [String: Any] = [
-				"error": errorMessage,
-				"errorCode": GENERIC_ERROR_CODE
+		log("Error occurred: \(errorMessage)")
+		
+		// Set error state to prevent duplicate events
+		isInErrorState = true
+		
+		// Stop playback without emitting another state change
+		stopPlaybackWithoutStateChange()
+		
+		// Emit error state
+		sendEvent(type: EVENT_TYPE_ERROR, track: currentTrack, payload: ["message": errorMessage])
+		
+		// For live streams, attempt automatic recovery after a short delay
+		DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+			guard let self = self else { return }
+			
+			// Only attempt recovery if we still have a track and no new track has been loaded
+			guard let track = self.currentTrack, self.isInErrorState else { return }
+			
+			self.log("Attempting automatic error recovery for live stream")
+			
+			// Reset error state
+			self.isInErrorState = false
+			self.lastEmittedState = ""
+			
+			// Restart the stream
+			let options: NSDictionary = [
+				"autoPlay": true,
+				"debug": self.settingDebug
 			]
-			sendEvent(type: EVENT_TYPE_PLAYBACK_ERROR, track: currentTrack, payload: errorPayload)
+			
+			self.play(track: track, options: options)
+			
+			// Automatically apply SwiftAudioEx force refresh pattern after error recovery
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+				self?.forceRefreshNowPlayingInfoInternal()
+			}
 		}
-
-		// Then use the shared resetInternal function to:
-		// 1. Clear the player state (like clear())
-		// 2. Emit STATE_CHANGED: ERROR
-		resetInternal(STATE_ERROR)
 	}
 
 	////////////////////////////////////////////////////////////
@@ -2085,5 +2097,109 @@ class AudioPro: RCTEventEmitter {
 		print("  - Current player rate: \(player?.rate ?? 0)")
 		print("  - Should be playing: \(shouldBePlaying)")
 		print("  - Has listeners: \(hasListeners)")
+	}
+
+	/// Forces a complete refresh of Now Playing metadata using SwiftAudioEx-inspired pattern
+	/// This clears existing metadata and rebuilds it from scratch - critical for Samsung TV compatibility
+	/// This is now called automatically during error recovery, interruption recovery, and AirPlay transitions
+	private func forceRefreshNowPlayingInfoInternal() {
+		log("[SwiftAudioEx Pattern] Force refreshing Now Playing metadata")
+		
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			// Step 1: Clear existing Now Playing info (SwiftAudioEx pattern)
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+			
+			// Step 2: Small delay to ensure clearing is processed
+			DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+				guard let self = self else { return }
+				
+				// Step 3: Rebuild metadata from scratch
+				self.loadNowPlayingMetaValues()
+			}
+		}
+	}
+	
+	/// Loads/reloads all Now Playing metadata values from current track (SwiftAudioEx pattern)
+	private func loadNowPlayingMetaValues() {
+		log("[SwiftAudioEx Pattern] Loading Now Playing meta values")
+		
+		// Ensure we have a current track
+		guard let _ = currentTrack else {
+			log("[SwiftAudioEx Pattern] No current track for metadata loading")
+			return
+		}
+		
+		// Ensure artwork is ready before setting metadata
+		if currentArtworkImage == nil {
+			log("[SwiftAudioEx Pattern] No artwork available, creating fallback")
+			currentArtworkImage = createSamsungTVFallbackArtwork()
+		}
+		
+		// Set metadata using our Samsung TV optimized method
+		setNowPlayingMetadata()
+		
+		// Update playback values separately (SwiftAudioEx pattern)
+		updateNowPlayingPlaybackValues()
+	}
+	
+	/// Updates only the dynamic playback values without touching metadata structure (SwiftAudioEx pattern)
+	private func updateNowPlayingPlaybackValues() {
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			// Get existing metadata to preserve it
+			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+			
+			// Update only dynamic properties
+			if let player = self.player {
+				let rate = player.rate
+				let time = player.currentTime().seconds
+				let validTime = (time.isNaN || time.isInfinite) ? 0 : time
+
+				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
+				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
+
+				if let currentItem = player.currentItem {
+					let itemDuration = currentItem.duration.seconds
+					if !itemDuration.isNaN && !itemDuration.isInfinite {
+						nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
+					}
+				}
+				
+				self.log("[SwiftAudioEx Pattern] Updated playback values - rate: \(rate), time: \(validTime)")
+			} else {
+				// If player is nil, reflect a stopped state
+				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
+				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
+			}
+			
+			// Apply the updated values
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+		}
+	}
+
+	private func checkBackgroundAudioConfiguration() {
+		// Check background modes configuration (SwiftAudioEx requirement)
+		if let backgroundModes = Bundle.main.infoDictionary?["UIBackgroundModes"] as? [String] {
+			let hasAudioBackground = backgroundModes.contains("audio")
+			let hasAirPlayBackground = backgroundModes.contains("audio") // AirPlay requires "audio" background mode
+			
+			log("[SwiftAudioEx Check] Background modes found: \(backgroundModes)")
+			log("[SwiftAudioEx Check] Has audio background mode: \(hasAudioBackground)")
+			log("[SwiftAudioEx Check] AirPlay will work: \(hasAirPlayBackground)")
+			
+			if !hasAudioBackground {
+				log("[SwiftAudioEx Check] ❌ WARNING: Missing 'audio' background mode!")
+				log("[SwiftAudioEx Check] Add 'Audio, AirPlay, and Picture in Picture' capability in Xcode")
+				log("[SwiftAudioEx Check] This is required for AirPlay to work properly")
+			} else {
+				log("[SwiftAudioEx Check] ✅ Background audio configuration is correct")
+			}
+		} else {
+			log("[SwiftAudioEx Check] ❌ ERROR: No UIBackgroundModes found in Info.plist!")
+			log("[SwiftAudioEx Check] AirPlay will not work without background audio capabilities")
+		}
 	}
 }
