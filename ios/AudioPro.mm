@@ -24,7 +24,6 @@ RCT_EXTERN_METHOD(ambientSeekTo:(double)positionMs)
 
 RCT_EXTERN_METHOD(testInterruptionHandling)
 RCT_EXTERN_METHOD(testAudioSessionState)
-RCT_EXTERN_METHOD(debugSamsungTVState)
 
 + (BOOL)requiresMainQueueSetup
 {
