@@ -61,6 +61,7 @@ class AudioPro: RCTEventEmitter {
 
 	private var currentPlaybackSpeed: Float = 1.0
 	private var currentTrack: NSDictionary?
+	private var currentArtworkImage: UIImage?
 
 	private var settingDebug: Bool = false
 	private var settingDebugIncludeProgress: Bool = false
@@ -461,6 +462,24 @@ class AudioPro: RCTEventEmitter {
 		// Reset explicitly stopped flag when playing
 		isExplicitlyStopped = false
 		currentTrack = track
+
+		// Clear previous artwork and synchronously load new artwork if provided as a local file path.
+		// This is critical for AirPlay/CarPlay to prevent race conditions with network-loaded images.
+		self.currentArtworkImage = nil
+		if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
+			if artworkUrl.isFileURL {
+				do {
+					let imageData = try Data(contentsOf: artworkUrl)
+					self.currentArtworkImage = UIImage(data: imageData)
+					log("Successfully loaded local artwork from path.")
+				} catch {
+					log("Failed to load local artwork image from path: \(artworkPath)")
+				}
+			} else {
+				log("Artwork was not a local file URL. For best results with AirPlay, use a local image via require('./path/to/image.png').")
+			}
+		}
+
 		settingDebug = options["debug"] as? Bool ?? false
 		settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
 		let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
@@ -527,7 +546,7 @@ class AudioPro: RCTEventEmitter {
 				self.setupRemoteTransportControls()
 				
 				// Update the now playing info
-				self.updateNowPlayingInfo(time: 0, rate: autoPlay ? 1.0 : 0.0)
+				self.updateNowPlayingInfo()
 				
 				// Start playback if autoPlay is true
 				if autoPlay {
@@ -559,7 +578,7 @@ class AudioPro: RCTEventEmitter {
 		player?.pause()
 		stopTimer()
 		sendPausedStateEvent()
-		updateNowPlayingInfo(time: player?.currentTime().seconds ?? 0, rate: 0)
+		updateNowPlayingInfo()
 		print("🚨 [AudioPro] PAUSE COMPLETED, rate=\(String(describing: player?.rate))")
 		log("[Pause] Completed. player=\(player != nil), player?.rate=\(String(describing: player?.rate))")
 	}
@@ -621,7 +640,7 @@ class AudioPro: RCTEventEmitter {
 					// Update UI and controls
 					let currentTime = player.currentTime().seconds
 					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
-					self.updateNowPlayingInfo(time: validTime, rate: 1.0)
+					self.updateNowPlayingInfo()
 					self.updateNextPrevControlsState()
 					self.startProgressTimer()
 					
@@ -671,7 +690,7 @@ class AudioPro: RCTEventEmitter {
 		sendStoppedStateEvent()
 
 		// Update now playing info to reflect a stopped state but keep the artwork intact.
-		updateNowPlayingInfo(time: 0, rate: 0)
+		updateNowPlayingInfo()
 	}
 
 	/// Resets the player to IDLE state, fully tears down the player instance,
@@ -704,6 +723,7 @@ class AudioPro: RCTEventEmitter {
 		// Clear track and stop timers
 		stopTimer()
 		currentTrack = nil
+		currentArtworkImage = nil
 
 		// Release resources and remove observers
 		// We've already cleared currentTrack, so we don't need to do it again in cleanup
@@ -754,6 +774,7 @@ class AudioPro: RCTEventEmitter {
 		// Only clear the track if requested
 		if clearTrack {
 			currentTrack = nil
+			currentArtworkImage = nil
 		}
 
 		// Only emit state change if requested and not in error state
@@ -823,7 +844,7 @@ class AudioPro: RCTEventEmitter {
 		player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
 			guard let self = self else { return }
 			if completed {
-				self.updateNowPlayingInfoWithCurrentTime(validPosition)
+				self.updateNowPlayingInfo()
 				self.completeSeekingAndSendSeekCompleteNoticeEvent(newPosition: validPosition * 1000)
 
 				// Force update the now playing info to ensure controls work
@@ -897,7 +918,7 @@ class AudioPro: RCTEventEmitter {
 		log("Setting playback speed to ", speed)
 		player.rate = Float(speed)
 
-		updateNowPlayingInfo(rate: Float(speed))
+		updateNowPlayingInfo()
 
 		if hasListeners {
 			let playbackInfo = getPlaybackInfo()
@@ -947,7 +968,7 @@ class AudioPro: RCTEventEmitter {
 		player?.seek(to: .zero)
 		stopTimer()
 
-		updateNowPlayingInfo(time: 0, rate: 0)
+		updateNowPlayingInfo()
 
 		sendStateEvent(state: STATE_STOPPED, position: 0, duration: info.duration, track: currentTrack)
 
@@ -1056,9 +1077,7 @@ class AudioPro: RCTEventEmitter {
 			if let player = object as? AVPlayer, player.isExternalPlaybackActive {
 				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
 				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
-				// We re-push the now playing info, which will trigger artwork loading if needed.
-				let info = getPlaybackInfo()
-				self.updateNowPlayingInfo(time: Double(info.position) / 1000.0, rate: player.rate)
+				self.updateNowPlayingInfo()
 			}
 		default:
 			super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
@@ -1139,50 +1158,50 @@ class AudioPro: RCTEventEmitter {
 		cleanup(emitStateChange: false)
 	}
 
-	/// Updates Now Playing Info with specified parameters, preserving existing values
-	private func updateNowPlayingInfo(time: Double? = nil, rate: Float? = nil, duration: Double? = nil, track: NSDictionary? = nil) {
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+	/// Updates Now Playing Info with the minimal information required for remote controls.
+	/// Per user requirements, we do not set any metadata like title, artist, or artwork.
+	private func updateNowPlayingInfo() {
+		var nowPlayingInfo = [String: Any]()
 
-		// Update time if provided
-		if let time = time {
-			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
+		guard let player = player else {
+			// If player is nil, clear the now playing info
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = [:]
+			return
 		}
+		
+		let rate = player.rate
+		let time = player.currentTime().seconds
+		let validTime = (time.isNaN || time.isInfinite) ? 0 : time
 
-		// Update rate if provided, otherwise use current player rate
-		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate ?? player?.rate ?? 0
-
-		// Update duration if provided, otherwise try to get from current item
-		if let duration = duration {
-			nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = duration
-		} else if let currentItem = player?.currentItem {
+		// Essential properties for lock screen/control center UI.
+		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
+		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+		
+		// Use track metadata if available, otherwise fallback to generic info.
+		if let trackInfo = currentTrack {
+			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
+			nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
+		} else {
+			nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
+			nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
+		}
+		
+		// Use the pre-loaded local artwork image.
+		if let image = self.currentArtworkImage {
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+		}
+		
+		// Including duration can help the system UI, even for live streams.
+		if let currentItem = player.currentItem {
 			let itemDuration = currentItem.duration.seconds
 			if !itemDuration.isNaN && !itemDuration.isInfinite {
 				nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
 			}
 		}
 
-		// Ensure we have the basic track info from either provided track or current track
-		let trackInfo = track ?? currentTrack
-		if let trackInfo = trackInfo {
-			if nowPlayingInfo[MPMediaItemPropertyTitle] == nil, let title = trackInfo["title"] as? String {
-				nowPlayingInfo[MPMediaItemPropertyTitle] = title
-			}
-			if nowPlayingInfo[MPMediaItemPropertyArtist] == nil, let artist = trackInfo["artist"] as? String {
-				nowPlayingInfo[MPMediaItemPropertyArtist] = artist
-			}
-			if nowPlayingInfo[MPMediaItemPropertyAlbumTitle] == nil, let album = trackInfo["album"] as? String {
-				nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
-			}
-		}
-
-		// Always set live stream indicator for radio streams
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-
+		// Assign the simplified dictionary. An empty dictionary is assigned if player is nil.
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-	}
-
-	private func updateNowPlayingInfoWithCurrentTime(_ time: Double) {
-		updateNowPlayingInfo(time: time)
 	}
 
 	/**
@@ -1554,51 +1573,6 @@ class AudioPro: RCTEventEmitter {
 		log("Audio session configured for playback with enhanced options")
 	}
 
-	private func updateNowPlayingInfo(time: Double, rate: Float) {
-		guard let track = currentTrack else { return }
-		
-		// Preserve existing now playing info to avoid clearing artwork
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-		
-		// Set title, artist, and album only if not already set
-		if let title = track["title"] as? String {
-			nowPlayingInfo[MPMediaItemPropertyTitle] = title
-		}
-		
-		if let artist = track["artist"] as? String {
-			nowPlayingInfo[MPMediaItemPropertyArtist] = artist
-		}
-		
-		if let album = track["album"] as? String {
-			nowPlayingInfo[MPMediaItemPropertyAlbumTitle] = album
-		}
-		
-		// Always set as live stream for radio
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-		
-		// Set playback rate
-		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
-		
-		// Set elapsed time
-		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = time
-		
-		// Update the now playing info (this preserves artwork if already loaded)
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-		
-		// Load and set artwork if available and not already loaded
-		if let artworkUrlString = track["artwork"] as? String, 
-		   let artworkUrl = URL(string: artworkUrlString),
-		   nowPlayingInfo[MPMediaItemPropertyArtwork] == nil {
-			loadArtwork(from: artworkUrl) { [weak self] image in
-				guard let self = self, let image = image else { return }
-				
-				var updatedInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-				updatedInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-				MPNowPlayingInfoCenter.default().nowPlayingInfo = updatedInfo
-			}
-		}
-	}
-
 	private func createPlayerItem(with url: URL, headers: NSDictionary?) -> AVPlayerItem {
 		// Create player item with custom headers if provided
 		if let headers = headers, let audioHeaders = headers["audio"] as? NSDictionary {
@@ -1649,44 +1623,6 @@ class AudioPro: RCTEventEmitter {
 			name: .AVPlayerItemDidPlayToEndTime,
 			object: playerItem
 		)
-	}
-
-	private func loadArtwork(from url: URL, completion: @escaping (UIImage?) -> Void) {
-		// Use URLSession for secure, asynchronous network requests per Apple guidelines
-		let request = URLRequest(url: url, cachePolicy: .useProtocolCachePolicy, timeoutInterval: 30.0)
-		
-		URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
-			guard let self = self else { return }
-			
-			// Validate response
-			if let error = error {
-				self.log("Failed to load artwork: \(error.localizedDescription)")
-				DispatchQueue.main.async { completion(nil) }
-				return
-			}
-			
-			// Validate HTTP response status
-			if let httpResponse = response as? HTTPURLResponse,
-			   !(200...299).contains(httpResponse.statusCode) {
-				self.log("Failed to load artwork: HTTP \(httpResponse.statusCode)")
-				DispatchQueue.main.async { completion(nil) }
-				return
-			}
-			
-			// Validate and process image data
-			guard let data = data,
-				  data.count > 0,
-				  data.count < 10_000_000, // Limit to 10MB for security
-				  let image = UIImage(data: data) else {
-				self.log("Invalid or oversized artwork data")
-				DispatchQueue.main.async { completion(nil) }
-				return
-			}
-			
-			DispatchQueue.main.async {
-				completion(image)
-			}
-		}.resume()
 	}
 
 	@objc(testInterruptionHandling)
