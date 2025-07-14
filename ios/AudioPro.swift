@@ -469,6 +469,15 @@ class AudioPro: RCTEventEmitter {
 
 					// Clear previous artwork and load new artwork if provided.
 		self.currentArtworkImage = nil
+		
+		// Create a completion handler that ensures setNowPlayingMetadata() is called only once
+		let artworkLoadingComplete: () -> Void = {
+			DispatchQueue.main.async {
+				self.log("[NowPlayingInfo] Setting nowPlayingInfo artwork: \(self.currentArtworkImage != nil ? "loaded" : "none")")
+				self.setNowPlayingMetadata()
+			}
+		}
+		
 		if let artworkPath = track["artwork"] as? String {
 			self.log("Received artwork path: \(artworkPath)")
 			if let artworkUrl = URL(string: artworkPath) {
@@ -480,53 +489,45 @@ class AudioPro: RCTEventEmitter {
 					// First try to load directly from the URL
 					do {
 						let imageData = try Data(contentsOf: artworkUrl)
-						self.currentArtworkImage = UIImage(data: imageData)
-						if let image = self.currentArtworkImage {
-							self.log("Successfully loaded local artwork from path. Image size: \(image.size)")
-							// Immediately update Now Playing info with the loaded artwork
-							DispatchQueue.main.async {
-								self.setNowPlayingMetadata()
-							}
+						if let loadedImage = UIImage(data: imageData) {
+							// Ensure image is properly sized for AirPlay (Samsung TVs prefer 600x600)
+							self.currentArtworkImage = self.resizeImageForAirPlay(loadedImage)
+							self.log("Successfully loaded and resized local artwork from path. Original size: \(loadedImage.size), Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+							artworkLoadingComplete()
+							return
 						} else {
 							self.log("Failed to create UIImage from loaded data")
 						}
 					} catch {
 						self.log("Failed to load from URL directly, error: \(error.localizedDescription)")
-						
-						// If direct loading fails, try to load from bundle by extracting filename
-						let fileName = artworkUrl.lastPathComponent
-						self.log("Attempting to load from bundle with filename: \(fileName)")
-						
-						if let bundleImage = UIImage(named: fileName) {
-							self.currentArtworkImage = bundleImage
-							self.log("Successfully loaded artwork from bundle with filename: \(fileName)")
-							// Immediately update Now Playing info with the loaded artwork
-							DispatchQueue.main.async {
-								self.setNowPlayingMetadata()
-							}
+					}
+					
+					// If direct loading fails, try to load from bundle by extracting filename
+					let fileName = artworkUrl.lastPathComponent
+					self.log("Attempting to load from bundle with filename: \(fileName)")
+					
+					if let bundleImage = UIImage(named: fileName) {
+						self.currentArtworkImage = self.resizeImageForAirPlay(bundleImage)
+						self.log("Successfully loaded and resized artwork from bundle with filename: \(fileName). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+						artworkLoadingComplete()
+						return
+					} else {
+						// Try without file extension
+						let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
+						if let bundleImage = UIImage(named: nameWithoutExtension) {
+							self.currentArtworkImage = self.resizeImageForAirPlay(bundleImage)
+							self.log("Successfully loaded and resized artwork from bundle without extension: \(nameWithoutExtension). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+							artworkLoadingComplete()
+							return
 						} else {
-							// Try without file extension
-							let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
-							if let bundleImage = UIImage(named: nameWithoutExtension) {
-								self.currentArtworkImage = bundleImage
-								self.log("Successfully loaded artwork from bundle without extension: \(nameWithoutExtension)")
-								// Immediately update Now Playing info with the loaded artwork
-								DispatchQueue.main.async {
-									self.setNowPlayingMetadata()
-								}
-							} else {
-								self.log("Failed to load artwork from bundle. Tried: \(fileName) and \(nameWithoutExtension)")
-								// Even if artwork fails, update Now Playing info so Samsung TVs don't get stuck waiting
-								DispatchQueue.main.async {
-									self.setNowPlayingMetadata()
-								}
-							}
+							self.log("Failed to load artwork from bundle. Tried: \(fileName) and \(nameWithoutExtension)")
 						}
 					}
 				} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
 					// Load remote artwork asynchronously (required for network requests)
 					self.log("Loading remote artwork from: \(artworkPath)")
-					self.loadRemoteArtwork(from: artworkUrl)
+					self.loadRemoteArtwork(from: artworkUrl, completion: artworkLoadingComplete)
+					return // Don't call artworkLoadingComplete() here, it will be called by loadRemoteArtwork
 				} else {
 					self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
 				}
@@ -536,6 +537,9 @@ class AudioPro: RCTEventEmitter {
 		} else {
 			self.log("No artwork path provided in track")
 		}
+		
+		// If we reach here, artwork loading failed or no artwork was provided
+		artworkLoadingComplete()
 
 			self.settingDebug = options["debug"] as? Bool ?? false
 			self.settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
@@ -549,11 +553,10 @@ class AudioPro: RCTEventEmitter {
 				return
 			}
 			
-			// Clean up previous player if it exists
-			self.prepareForNewPlayback()
-			
-			// Set the static Now Playing metadata immediately. This is crucial for AirPlay.
-			self.setNowPlayingMetadata()
+					// Clean up previous player if it exists
+		self.prepareForNewPlayback()
+		
+		// Do NOT set Now Playing metadata yet - wait for artwork to load first for Samsung TVs
 			
 			// Send loading state immediately so UI can update
 			if autoPlay {
@@ -598,6 +601,9 @@ class AudioPro: RCTEventEmitter {
 			
 			// Update the remote command center
 			self.setupRemoteTransportControls()
+			
+			// Note: setNowPlayingMetadata() is called once after artwork loading completes
+			// This ensures artwork is included and prevents Samsung TV metadata conflicts
 			
 			// Update the now playing info with the playback state
 			self.updateNowPlayingPlaybackState()
@@ -1053,8 +1059,14 @@ class AudioPro: RCTEventEmitter {
 				case .readyToPlay:
 					log("Player item ready to play")
 
-					// When the player is ready, it's a critical time to ensure the Now Playing info is set.
-					setNowPlayingMetadata()
+					// Only set metadata if it hasn't been set yet (e.g., if artwork loading is still pending)
+					// This prevents duplicate metadata updates that can confuse Samsung TVs
+					if MPNowPlayingInfoCenter.default().nowPlayingInfo == nil || MPNowPlayingInfoCenter.default().nowPlayingInfo?.isEmpty == true {
+						log("Now Playing info not set yet, setting metadata")
+						setNowPlayingMetadata()
+					} else {
+						log("Now Playing info already set, skipping metadata update")
+					}
 					updateNowPlayingPlaybackState()
 					
 					// If we're supposed to be playing, ensure we're actually playing
@@ -1130,10 +1142,9 @@ class AudioPro: RCTEventEmitter {
 			}
 		case "externalPlaybackActive":
 			if let player = object as? AVPlayer, player.isExternalPlaybackActive {
-				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
-				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
-				setNowPlayingMetadata()
-				// Dispatch after a brief delay to ensure the system has settled.
+				log("AirPlay playback has started. Ensuring playback state is synchronized for external screen.")
+				// When AirPlay starts, only update the playback state to avoid interfering with artwork metadata
+				// The metadata should already be set with artwork from the play() method
 				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
 					self?.updateNowPlayingPlaybackState()
 				}
@@ -1220,9 +1231,11 @@ class AudioPro: RCTEventEmitter {
 	/// Sets the static metadata for the Now Playing info center.
 	/// This must be called on the main thread.
 	private func setNowPlayingMetadata() {
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+		// For Samsung TVs and other AirPlay receivers, we need to be very careful about metadata timing
+		// Create a completely fresh metadata dictionary to avoid any cached state issues
+		var nowPlayingInfo = [String: Any]()
 
-		// Use track metadata if available, otherwise fallback to generic info.
+		// Set basic metadata first
 		if let trackInfo = self.currentTrack {
 			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
 			nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
@@ -1231,43 +1244,86 @@ class AudioPro: RCTEventEmitter {
 			nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
 		}
 		
-		// Use the pre-loaded local artwork image.
+		// Always set live stream flag for radio
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+		
+		// Set artwork if available - this is critical for Samsung TVs
 		if let image = self.currentArtworkImage {
-			nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+			let artwork = MPMediaItemArtwork(boundsSize: image.size) { size in
+				// Ensure we return the image at the requested size
+				return image
+			}
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+			self.log("Setting Now Playing artwork. Image size: \(image.size)")
+		} else {
+			self.log("No artwork available for Now Playing info")
 		}
 
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-
+		// Set initial playback state for live streams
+		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
+		
+		self.log("Setting Now Playing metadata: \(nowPlayingInfo.keys.sorted())")
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
 	/// Loads artwork from a remote URL asynchronously and updates Now Playing info when loaded.
-	private func loadRemoteArtwork(from url: URL) {
+	private func loadRemoteArtwork(from url: URL, completion: @escaping () -> Void) {
 		URLSession.shared.dataTask(with: url) { [weak self] data, response, error in
 			guard let self = self else { return }
 			
 			if let error = error {
 				self.log("Failed to load remote artwork: \(error.localizedDescription)")
+				completion() // Call completion even on error
 				return
 			}
 			
 			guard let data = data, let image = UIImage(data: data) else {
 				self.log("Failed to create image from remote artwork data")
+				completion() // Call completion even on error
 				return
 			}
 			
 			// Update artwork on main thread
 			DispatchQueue.main.async {
-				self.currentArtworkImage = image
-				self.log("Successfully loaded remote artwork")
-				// Refresh Now Playing info with the new artwork
-				self.setNowPlayingMetadata()
-				// Force update for external playback (AirPlay)
-				if self.player?.isExternalPlaybackActive == true {
-					self.updateNowPlayingPlaybackState()
-				}
+				self.currentArtworkImage = self.resizeImageForAirPlay(image)
+				self.log("Successfully loaded and resized remote artwork. Original size: \(image.size), Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+				completion()
 			}
 		}.resume()
+	}
+
+	/// Resizes an image to be optimal for AirPlay and Samsung TV compatibility.
+	/// Samsung TVs typically request 600x600 artwork, so we ensure the image is properly sized.
+	private func resizeImageForAirPlay(_ originalImage: UIImage) -> UIImage {
+		// Target size for optimal Samsung TV compatibility
+		let targetSize = CGSize(width: 600, height: 600)
+		
+		// If image is already the target size, return as-is
+		if originalImage.size == targetSize {
+			return originalImage
+		}
+		
+		// Calculate aspect-fit scaling to maintain aspect ratio
+		let originalSize = originalImage.size
+		let aspectRatio = originalSize.width / originalSize.height
+		
+		var newSize: CGSize
+		if aspectRatio > 1 {
+			// Landscape - fit to width
+			newSize = CGSize(width: targetSize.width, height: targetSize.width / aspectRatio)
+		} else {
+			// Portrait or square - fit to height
+			newSize = CGSize(width: targetSize.height * aspectRatio, height: targetSize.height)
+		}
+		
+		// Create the resized image
+		UIGraphicsBeginImageContextWithOptions(newSize, false, 0.0)
+		originalImage.draw(in: CGRect(origin: .zero, size: newSize))
+		let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+		UIGraphicsEndImageContext()
+		
+		return resizedImage ?? originalImage
 	}
 
 	/// Updates the dynamic playback state for the Now Playing info center.
