@@ -1001,6 +1001,10 @@ class AudioPro: RCTEventEmitter {
 				switch item.status {
 				case .readyToPlay:
 					log("Player item ready to play")
+
+					// When the player is ready, it's a critical time to ensure the Now Playing info is set.
+					setNowPlayingMetadata()
+					updateNowPlayingPlaybackState()
 					
 					// If we're supposed to be playing, ensure we're actually playing
 					if shouldBePlaying {
@@ -1078,7 +1082,11 @@ class AudioPro: RCTEventEmitter {
 				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
 				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
 				setNowPlayingMetadata()
-				updateNowPlayingPlaybackState()
+
+				// Update the playback state after a brief delay to ensure the system has settled.
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+					self?.updateNowPlayingPlaybackState()
+				}
 			}
 		default:
 			super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
