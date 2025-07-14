@@ -1,4 +1,4 @@
-import { NativeModules } from 'react-native';
+import { NativeModules, Image } from 'react-native';
 
 import { ambientEmitter, emitter } from './emitter';
 import { useInternalStore } from './useInternalStore';
@@ -83,6 +83,17 @@ export const AudioPro = {
 	 */
 	play(track: AudioProTrack, options: AudioProPlayOptions = {}) {
 		const resolvedTrack = { ...track };
+
+		// If artwork is a local asset (result of require()), resolve its URI first.
+		// This is necessary for the validateFilePath function and the native module.
+		if (resolvedTrack.artwork && typeof resolvedTrack.artwork !== 'string') {
+			try {
+				resolvedTrack.artwork = Image.resolveAssetSource(resolvedTrack.artwork)?.uri;
+			} catch (error) {
+				console.error('[react-native-audio-pro]: Failed to resolve artwork asset.', error);
+				resolvedTrack.artwork = undefined; // Clear artwork if resolution fails
+			}
+		}
 
 		// Validate URL schemes for track and artwork
 		validateFilePath(resolvedTrack.url);

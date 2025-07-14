@@ -1,11 +1,12 @@
 import type { AudioProTrack } from './types';
 /**
- * Validates a file path or URL scheme.
- * Logs an error if the path does not begin with http://, https://, or file://.
+ * Validates that a given path is a valid URL (http, https, or file).
+ * If the path is undefined, it is considered valid (as it's optional).
  *
- * @param path - The path or URL to validate.
+ * @param path - The path to validate
+ * @internal
  */
-export declare function validateFilePath(path: string): void;
+export declare function validateFilePath(path: string | undefined): void;
 /**
  * A simplified URL validation function that doesn't rely on the URL constructor.
  * It performs basic checks on the URL string to determine if it's valid.

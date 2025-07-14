@@ -12,16 +12,16 @@ import {
 
 export type AudioProArtwork = string;
 
-export type AudioProTrack = {
+export interface AudioProTrack {
 	id: string;
 	url: string;
 	title: string;
-	artwork: AudioProArtwork;
+	artwork?: string;
 	album?: string;
 	artist?: string;
 	isLive?: boolean;
 	[key: string]: unknown; // custom properties
-};
+}
 
 // ==============================
 // CONFIGURE OPTIONS
@@ -44,11 +44,11 @@ export type AudioProHeaders = {
 	artwork?: Record<string, string>;
 };
 
-export type AudioProPlayOptions = {
+export interface AudioProPlayOptions {
 	autoPlay?: boolean;
 	headers?: AudioProHeaders;
 	startTimeMs?: number;
-};
+}
 
 // ==============================
 // EVENTS

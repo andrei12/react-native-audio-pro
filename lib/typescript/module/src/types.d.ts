@@ -1,15 +1,15 @@
 import { AudioProTriggerSource, AudioProAmbientEventType, AudioProContentType, AudioProEventType, AudioProState } from './values';
 export type AudioProArtwork = string;
-export type AudioProTrack = {
+export interface AudioProTrack {
     id: string;
     url: string;
     title: string;
-    artwork: AudioProArtwork;
+    artwork?: string;
     album?: string;
     artist?: string;
     isLive?: boolean;
     [key: string]: unknown;
-};
+}
 export type AudioProConfigureOptions = {
     contentType?: AudioProContentType;
     debug?: boolean;
@@ -21,11 +21,11 @@ export type AudioProHeaders = {
     audio?: Record<string, string>;
     artwork?: Record<string, string>;
 };
-export type AudioProPlayOptions = {
+export interface AudioProPlayOptions {
     autoPlay?: boolean;
     headers?: AudioProHeaders;
     startTimeMs?: number;
-};
+}
 export type AudioProEventCallback = (event: AudioProEvent) => void;
 export interface AudioProEvent {
     type: AudioProEventType;

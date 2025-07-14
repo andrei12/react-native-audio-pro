@@ -5,19 +5,18 @@ import { AudioProEventType } from './values';
 import type { AudioProTrack } from './types';
 
 /**
- * Validates a file path or URL scheme.
- * Logs an error if the path does not begin with http://, https://, or file://.
+ * Validates that a given path is a valid URL (http, https, or file).
+ * If the path is undefined, it is considered valid (as it's optional).
  *
- * @param path - The path or URL to validate.
+ * @param path - The path to validate
+ * @internal
  */
-export function validateFilePath(path: string) {
-	const supportedSchemes = ['http://', 'https://', 'file://'];
-	if (!supportedSchemes.some((scheme) => path && path.startsWith(scheme))) {
-		console.error(
-			`[react-native-audio-pro] Invalid file path detected: ${path}. ` +
-				`Only http://, https://, and file:// schemes are recognized.`,
-		);
+export function validateFilePath(path: string | undefined): void {
+	if (path === undefined) return; // Optional paths are valid
+	if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('file://')) {
+		return;
 	}
+	throw new Error(`Invalid URL scheme for path: ${path}. Must be http, https, or file.`);
 }
 
 /**
