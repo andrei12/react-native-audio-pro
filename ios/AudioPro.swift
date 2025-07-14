@@ -469,23 +469,72 @@ class AudioPro: RCTEventEmitter {
 
 					// Clear previous artwork and load new artwork if provided.
 		self.currentArtworkImage = nil
-		if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
-			if artworkUrl.isFileURL {
-				// Load local artwork synchronously (best for AirPlay)
-				do {
-					let imageData = try Data(contentsOf: artworkUrl)
-					self.currentArtworkImage = UIImage(data: imageData)
-					self.log("Successfully loaded local artwork from path.")
-				} catch {
-					self.log("Failed to load local artwork image from path: \(artworkPath)")
+		if let artworkPath = track["artwork"] as? String {
+			self.log("Received artwork path: \(artworkPath)")
+			if let artworkUrl = URL(string: artworkPath) {
+				self.log("Successfully created URL from artwork path. Scheme: \(artworkUrl.scheme ?? "nil"), isFileURL: \(artworkUrl.isFileURL)")
+				if artworkUrl.isFileURL {
+					// Load local artwork synchronously (best for AirPlay)
+					self.log("Attempting to load local artwork from file: \(artworkUrl.path)")
+					
+					// First try to load directly from the URL
+					do {
+						let imageData = try Data(contentsOf: artworkUrl)
+						self.currentArtworkImage = UIImage(data: imageData)
+						if let image = self.currentArtworkImage {
+							self.log("Successfully loaded local artwork from path. Image size: \(image.size)")
+							// Immediately update Now Playing info with the loaded artwork
+							DispatchQueue.main.async {
+								self.setNowPlayingMetadata()
+							}
+						} else {
+							self.log("Failed to create UIImage from loaded data")
+						}
+					} catch {
+						self.log("Failed to load from URL directly, error: \(error.localizedDescription)")
+						
+						// If direct loading fails, try to load from bundle by extracting filename
+						let fileName = artworkUrl.lastPathComponent
+						self.log("Attempting to load from bundle with filename: \(fileName)")
+						
+						if let bundleImage = UIImage(named: fileName) {
+							self.currentArtworkImage = bundleImage
+							self.log("Successfully loaded artwork from bundle with filename: \(fileName)")
+							// Immediately update Now Playing info with the loaded artwork
+							DispatchQueue.main.async {
+								self.setNowPlayingMetadata()
+							}
+						} else {
+							// Try without file extension
+							let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
+							if let bundleImage = UIImage(named: nameWithoutExtension) {
+								self.currentArtworkImage = bundleImage
+								self.log("Successfully loaded artwork from bundle without extension: \(nameWithoutExtension)")
+								// Immediately update Now Playing info with the loaded artwork
+								DispatchQueue.main.async {
+									self.setNowPlayingMetadata()
+								}
+							} else {
+								self.log("Failed to load artwork from bundle. Tried: \(fileName) and \(nameWithoutExtension)")
+								// Even if artwork fails, update Now Playing info so Samsung TVs don't get stuck waiting
+								DispatchQueue.main.async {
+									self.setNowPlayingMetadata()
+								}
+							}
+						}
+					}
+				} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
+					// Load remote artwork asynchronously (required for network requests)
+					self.log("Loading remote artwork from: \(artworkPath)")
+					self.loadRemoteArtwork(from: artworkUrl)
+				} else {
+					self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
 				}
-			} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
-				// Load remote artwork asynchronously (required for network requests)
-				self.log("Loading remote artwork from: \(artworkPath)")
-				self.loadRemoteArtwork(from: artworkUrl)
 			} else {
-				self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
+				self.log("Failed to create URL from artwork path: \(artworkPath)")
 			}
+		} else {
+			self.log("No artwork path provided in track")
 		}
 
 			self.settingDebug = options["debug"] as? Bool ?? false

@@ -87,12 +87,29 @@ export const AudioPro = {
 		// If artwork is a local asset (result of require()), resolve its URI first.
 		// This is necessary for the validateFilePath function and the native module.
 		if (resolvedTrack.artwork && typeof resolvedTrack.artwork !== 'string') {
+			console.log(
+				'[react-native-audio-pro]: Artwork is not a string, resolving asset. Type:',
+				typeof resolvedTrack.artwork,
+				'Value:',
+				resolvedTrack.artwork,
+			);
 			try {
-				resolvedTrack.artwork = Image.resolveAssetSource(resolvedTrack.artwork)?.uri;
+				const resolved = Image.resolveAssetSource(resolvedTrack.artwork);
+				console.log('[react-native-audio-pro]: Image.resolveAssetSource result:', resolved);
+				resolvedTrack.artwork = resolved?.uri;
+				console.log(
+					'[react-native-audio-pro]: Final resolved artwork URI:',
+					resolvedTrack.artwork,
+				);
 			} catch (error) {
 				console.error('[react-native-audio-pro]: Failed to resolve artwork asset.', error);
 				resolvedTrack.artwork = undefined; // Clear artwork if resolution fails
 			}
+		} else {
+			console.log(
+				'[react-native-audio-pro]: Artwork is already a string:',
+				resolvedTrack.artwork,
+			);
 		}
 
 		// Validate URL schemes for track and artwork
