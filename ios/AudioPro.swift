@@ -1277,11 +1277,11 @@ class AudioPro: RCTEventEmitter {
 				let fixedBoundsSize = CGSize(width: 600, height: 600)
 				
 				let artwork = MPMediaItemArtwork(boundsSize: fixedBoundsSize) { [weak self] requestedSize in
-					// CRITICAL: Never return nil - this causes Samsung TV "Catalog returned nil image" errors
-					guard let strongSelf = self else { 
-						strongSelf?.log("ERROR: Weak self in artwork callback, returning fallback image")
-						return image 
-					}
+					                                        // CRITICAL: Never return nil - this causes Samsung TV "Catalog returned nil image" errors
+                                        guard let strongSelf = self else { 
+                                                print("[AudioPro] ERROR: Weak self in artwork callback, returning fallback image")
+                                                return image 
+                                        }
 					
 					strongSelf.log("[Samsung TV] Artwork callback - Requested size: \(requestedSize), Fixed bounds: \(fixedBoundsSize)")
 					
