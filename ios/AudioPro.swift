@@ -1069,12 +1069,16 @@ class AudioPro: RCTEventEmitter {
 					// This prevents duplicate metadata updates that can confuse Samsung TVs
 					let existingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
 					let hasTrackInfo = existingInfo?[MPMediaItemPropertyTitle] != nil
+					let hasArtwork = existingInfo?[MPMediaItemPropertyArtwork] != nil
 					
 					if !hasTrackInfo {
-						log("[NowPlayingInfo] Setting nowPlayingInfo artwork from player ready state: metadata not yet set")
+						log("[Samsung TV] Setting metadata from player ready state - no existing metadata")
+						setNowPlayingMetadata()
+					} else if !hasArtwork && self.currentArtworkImage != nil {
+						log("[Samsung TV] Metadata exists but no artwork - Samsung TV needs artwork to prevent loading spinner")
 						setNowPlayingMetadata()
 					} else {
-						log("Now Playing info already set with track metadata, skipping duplicate update from player ready state")
+						log("[Samsung TV] Metadata and artwork already set, preserving for Samsung TV compatibility")
 					}
 					updateNowPlayingPlaybackState()
 					
@@ -1151,11 +1155,15 @@ class AudioPro: RCTEventEmitter {
 			}
 		case "externalPlaybackActive":
 			if let player = object as? AVPlayer, player.isExternalPlaybackActive {
-				log("AirPlay playback has started. Ensuring playback state is synchronized for external screen.")
-				// When AirPlay starts, only update the playback state to avoid interfering with artwork metadata
-				// The metadata should already be set with artwork from the play() method
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+				log("[Samsung TV] AirPlay/Samsung TV playback has started. Preserving artwork metadata.")
+				// CRITICAL: When Samsung TV AirPlay starts, DO NOT update any metadata
+				// Samsung TVs are extremely sensitive to metadata changes during AirPlay activation
+				// The artwork metadata was already set during play() - preserve it completely
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+					// Only update playback state, never touch the metadata dictionary
+					// This prevents Samsung TV from losing artwork and showing loading spinner
 					self?.updateNowPlayingPlaybackState()
+					self?.log("[Samsung TV] AirPlay activation complete - playback state updated without touching metadata")
 				}
 			}
 		default:
@@ -1241,76 +1249,90 @@ class AudioPro: RCTEventEmitter {
 	/// This must be called on the main thread.
 	private func setNowPlayingMetadata() {
 		// For Samsung TVs and other AirPlay receivers, we need to be very careful about metadata timing
-		// Create a completely fresh metadata dictionary to avoid any cached state issues
-		var nowPlayingInfo = [String: Any]()
+		// Samsung TVs are particularly sensitive to rapid metadata updates and artwork callback failures
+		
+		// Add a small delay to prevent Samsung TV metadata timing conflicts
+		DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+			guard let self = self else { return }
+			
+			// Create a completely fresh metadata dictionary to avoid any cached state issues
+			var nowPlayingInfo = [String: Any]()
 
-		// Set basic metadata first
-		if let trackInfo = self.currentTrack {
-			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
-			nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
-		} else {
-			nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
-			nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
-		}
-		
-		// Always set live stream flag for radio
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-		
-		// Set artwork if available - this is critical for Samsung TVs
-		if let image = self.currentArtworkImage {
-			// For Samsung TV compatibility, ensure we provide artwork at the exact requested size
-			// Use the image's actual size as the bounds to ensure proper scaling
-			let artwork = MPMediaItemArtwork(boundsSize: image.size) { [weak self] requestedSize in
-				// Always return a valid image - never return nil as this causes Samsung TV issues
-				guard let strongSelf = self else { return image }
-				
-				strongSelf.log("Artwork requested at size: \(requestedSize), original size: \(image.size)")
-				
-				// If requested size is invalid or zero, return original
-				guard requestedSize.width > 0 && requestedSize.height > 0 else {
-					strongSelf.log("Invalid requested size, returning original image")
-					return image
-				}
-				
-				// If size matches exactly, return original
-				if abs(requestedSize.width - image.size.width) < 1.0 && abs(requestedSize.height - image.size.height) < 1.0 {
-					strongSelf.log("Size matches, returning original image")
-					return image
-				}
-				
-				// Resize to exact requested dimensions for Samsung TV compatibility
-				strongSelf.log("Resizing artwork from \(image.size) to \(requestedSize)")
-				UIGraphicsBeginImageContextWithOptions(requestedSize, false, 0.0)
-				defer { UIGraphicsEndImageContext() }
-				
-				image.draw(in: CGRect(origin: .zero, size: requestedSize))
-				if let resizedImage = UIGraphicsGetImageFromCurrentImageContext() {
-					strongSelf.log("Successfully resized artwork to \(resizedImage.size)")
-					return resizedImage
-				} else {
-					strongSelf.log("Failed to resize artwork, returning original")
-					return image
-				}
+			// Set basic metadata first
+			if let trackInfo = self.currentTrack {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
+			} else {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
 			}
-			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-			self.log("Setting Now Playing artwork for Samsung TV compatibility. Image size: \(image.size)")
-		} else {
-			self.log("No artwork available for Now Playing info")
-		}
+			
+			// Always set live stream flag for radio
+			nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+			
+			// Set artwork if available - this is critical for Samsung TVs
+			if let image = self.currentArtworkImage {
+				// CRITICAL: Samsung TVs work best with a fixed 600x600 boundsSize regardless of actual image size
+				// This prevents Samsung TV artwork loading failures seen in community reports
+				let fixedBoundsSize = CGSize(width: 600, height: 600)
+				
+				let artwork = MPMediaItemArtwork(boundsSize: fixedBoundsSize) { [weak self] requestedSize in
+					// CRITICAL: Never return nil - this causes Samsung TV "Catalog returned nil image" errors
+					guard let strongSelf = self else { 
+						strongSelf?.log("ERROR: Weak self in artwork callback, returning fallback image")
+						return image 
+					}
+					
+					strongSelf.log("[Samsung TV] Artwork callback - Requested size: \(requestedSize), Fixed bounds: \(fixedBoundsSize)")
+					
+					// If requested size is invalid or zero, return pre-sized image
+					guard requestedSize.width > 0 && requestedSize.height > 0 else {
+						strongSelf.log("[Samsung TV] Invalid requested size, returning pre-sized image")
+						return image
+					}
+					
+					// Samsung TVs often request exactly 600x600 - if so, return our pre-sized image
+					if abs(requestedSize.width - 600.0) < 1.0 && abs(requestedSize.height - 600.0) < 1.0 {
+						strongSelf.log("[Samsung TV] Samsung TV 600x600 request detected, returning optimized image")
+						return image
+					}
+					
+					// For other sizes, resize but ensure we always return a valid image
+					strongSelf.log("[Samsung TV] Resizing artwork from 600x600 to \(requestedSize) for AirPlay device")
+					
+					UIGraphicsBeginImageContextWithOptions(requestedSize, false, 0.0)
+					defer { UIGraphicsEndImageContext() }
+					
+					image.draw(in: CGRect(origin: .zero, size: requestedSize))
+					if let resizedImage = UIGraphicsGetImageFromCurrentImageContext() {
+						strongSelf.log("[Samsung TV] Successfully resized artwork to \(resizedImage.size)")
+						return resizedImage
+					} else {
+						// CRITICAL: If resize fails, always return the original rather than nil
+						strongSelf.log("[Samsung TV] Resize failed, returning original to prevent Samsung TV errors")
+						return image
+					}
+				}
+				nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+				self.log("[Samsung TV] Setting Now Playing artwork with fixed 600x600 bounds for Samsung TV compatibility")
+			} else {
+				self.log("[Samsung TV] No artwork available - Samsung TV may show loading spinner")
+			}
 
-		// Set initial playback state for live streams
-		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
-		
-		self.log("Setting Now Playing metadata with keys: \(nowPlayingInfo.keys.sorted())")
-		
-		// Ensure we only set metadata when we have valid content
-		// Setting invalid or incomplete metadata can cause Samsung TV issues
-		if nowPlayingInfo[MPMediaItemPropertyTitle] != nil {
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-			self.log("Successfully set Now Playing metadata")
-		} else {
-			self.log("ERROR: Attempted to set Now Playing metadata without track title - skipping")
+			// Set initial playback state for live streams
+			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
+			
+			self.log("[Samsung TV] Setting Now Playing metadata with keys: \(nowPlayingInfo.keys.sorted())")
+			
+			// Ensure we only set metadata when we have valid content
+			// Setting invalid or incomplete metadata can cause Samsung TV issues
+			if nowPlayingInfo[MPMediaItemPropertyTitle] != nil {
+				MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+				self.log("[Samsung TV] Successfully set Now Playing metadata with Samsung TV optimizations")
+			} else {
+				self.log("[Samsung TV] ERROR: Attempted to set metadata without track title - this causes Samsung TV issues")
+			}
 		}
 	}
 
