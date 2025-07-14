@@ -1887,16 +1887,21 @@ class AudioPro: RCTEventEmitter {
                         context.cgContext.setLineWidth(4)
                         context.cgContext.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20))
 			
-			// Add text
-			let text = "🎵\nLive Radio"
-			let attributes: [NSAttributedString.Key: Any] = [
-				.font: UIFont.boldSystemFont(ofSize: 48),
-				.foregroundColor: UIColor.white,
-				.textAlignment: NSTextAlignment.center
-			]
-			
-			let textRect = CGRect(x: 50, y: 250, width: size.width - 100, height: 100)
-			text.draw(in: textRect, withAttributes: attributes)
+					// Add text
+		let text = "🎵\nLive Radio"
+		
+		// Create paragraph style for center alignment
+		let paragraphStyle = NSMutableParagraphStyle()
+		paragraphStyle.alignment = .center
+		
+		let attributes: [NSAttributedString.Key: Any] = [
+			.font: UIFont.boldSystemFont(ofSize: 48),
+			.foregroundColor: UIColor.white,
+			.paragraphStyle: paragraphStyle
+		]
+		
+		let textRect = CGRect(x: 50, y: 250, width: size.width - 100, height: 100)
+		text.draw(in: textRect, withAttributes: attributes)
 		}
 		
 		log("[Hardcoded Artwork] Created 600x600 hardcoded image for AirPlay")
