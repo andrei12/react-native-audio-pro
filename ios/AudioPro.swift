@@ -1168,55 +1168,63 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	/// Sets the static metadata for the Now Playing info center.
-	/// This should be called once when the track is first loaded.
+	/// This must be called on the main thread.
 	private func setNowPlayingMetadata() {
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 
-		// Use track metadata if available, otherwise fallback to generic info.
-		if let trackInfo = currentTrack {
-			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
-			nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
-		} else {
-			nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
-			nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
+			// Use track metadata if available, otherwise fallback to generic info.
+			if let trackInfo = self.currentTrack {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
+			} else {
+				nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
+				nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
+			}
+			
+			// Use the pre-loaded local artwork image.
+			if let image = self.currentArtworkImage {
+				nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+			}
+
+			nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 		}
-		
-		// Use the pre-loaded local artwork image.
-		if let image = self.currentArtworkImage {
-			nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-		}
-
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
 	/// Updates the dynamic playback state for the Now Playing info center.
-	/// This should be called when playback state changes (e.g., play, pause, seek).
+	/// This must be called on the main thread.
 	private func updateNowPlayingPlaybackState() {
-		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
-		
-		if let player = player {
-			let rate = player.rate
-			let time = player.currentTime().seconds
-			let validTime = (time.isNaN || time.isInfinite) ? 0 : time
+		DispatchQueue.main.async { [weak self] in
+			guard let self = self else { return }
+			
+			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+			
+			if let player = self.player {
+				let rate = player.rate
+				let time = player.currentTime().seconds
+				let validTime = (time.isNaN || time.isInfinite) ? 0 : time
 
-			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
-			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
+				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
+				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
 
-			if let currentItem = player.currentItem {
-				let itemDuration = currentItem.duration.seconds
-				if !itemDuration.isNaN && !itemDuration.isInfinite {
-					nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
+				if let currentItem = player.currentItem {
+					let itemDuration = currentItem.duration.seconds
+					if !itemDuration.isNaN && !itemDuration.isInfinite {
+						nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
+					}
 				}
+			} else {
+				// If player is nil, reflect a stopped state.
+				nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
+				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
 			}
-		} else {
-			// If player is nil, reflect a stopped state.
-			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
-			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
+			
+			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 		}
-		
-		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
 	/**
