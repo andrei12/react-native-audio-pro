@@ -1882,9 +1882,10 @@ class AudioPro: RCTEventEmitter {
 			UIColor(red: 0.1, green: 0.1, blue: 0.3, alpha: 1.0).setFill()
 			context.fill(CGRect(origin: .zero, size: size))
 			
-			// Add border
-			UIColor(red: 0.2, green: 0.2, blue: 0.5, alpha: 1.0).setStroke()
-			context.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20), width: 4)
+			                        // Add border
+                        UIColor(red: 0.2, green: 0.2, blue: 0.5, alpha: 1.0).setStroke()
+                        context.setLineWidth(4)
+                        context.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20))
 			
 			// Add text
 			let text = "🎵\nLive Radio"
