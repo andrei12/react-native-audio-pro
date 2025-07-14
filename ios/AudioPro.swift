@@ -455,67 +455,67 @@ class AudioPro: RCTEventEmitter {
 
 	@objc(play:withOptions:)
 	func play(track: NSDictionary, options: NSDictionary) {
-		// Reset error state when playing a new track
-		isInErrorState = false
-		// Reset last emitted state when playing a new track
-		lastEmittedState = ""
-		// Reset explicitly stopped flag when playing
-		isExplicitlyStopped = false
-		currentTrack = track
-
-		// Clear previous artwork and synchronously load new artwork if provided as a local file path.
-		// This is critical for AirPlay/CarPlay to prevent race conditions with network-loaded images.
-		self.currentArtworkImage = nil
-		if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
-			if artworkUrl.isFileURL {
-				do {
-					let imageData = try Data(contentsOf: artworkUrl)
-					self.currentArtworkImage = UIImage(data: imageData)
-					log("Successfully loaded local artwork from path.")
-				} catch {
-					log("Failed to load local artwork image from path: \(artworkPath)")
-				}
-			} else {
-				log("Artwork was not a local file URL. For best results with AirPlay, use a local image via require('./path/to/image.png').")
-			}
-		}
-
-		settingDebug = options["debug"] as? Bool ?? false
-		settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
-		let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
-		let volume = Float(options["volume"] as? Double ?? 1.0)
-		let autoPlay = options["autoPlay"] as? Bool ?? true
-		let contentType = options["contentType"] as? String ?? ""
-		
-		// Get URL from track
-		guard let urlString = track["url"] as? String, let url = URL(string: urlString) else {
-			onError("Invalid URL provided")
-			return
-		}
-		
-		// Clean up previous player if it exists
-		prepareForNewPlayback()
-		// Set the static Now Playing metadata immediately. This is crucial for AirPlay.
-		setNowPlayingMetadata()
-		
-		// Send loading state immediately so UI can update
-		if autoPlay {
-			shouldBePlaying = true
-			sendStateEvent(state: STATE_LOADING, position: 0, duration: 0, track: currentTrack)
-		}
-		
-		// Configure audio session first to ensure proper setup
-		do {
-			try configureAudioSession()
-		} catch {
-			log("Failed to configure audio session: \(error.localizedDescription)")
-			emitPlaybackError("Unable to configure audio playback")
-			// Continue anyway, as playback might still work
-		}
-		
-		// Move heavy operations to background queue
-		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+		// Ensure all setup is on the main thread to prevent race conditions.
+		DispatchQueue.main.async { [weak self] in
 			guard let self = self else { return }
+
+			// Reset error state when playing a new track
+			self.isInErrorState = false
+			// Reset last emitted state when playing a new track
+			self.lastEmittedState = ""
+			// Reset explicitly stopped flag when playing
+			self.isExplicitlyStopped = false
+			self.currentTrack = track
+
+			// Clear previous artwork and synchronously load new artwork if provided as a local file path.
+			// This is critical for AirPlay/CarPlay to prevent race conditions with network-loaded images.
+			self.currentArtworkImage = nil
+			if let artworkPath = track["artwork"] as? String, let artworkUrl = URL(string: artworkPath) {
+				if artworkUrl.isFileURL {
+					do {
+						let imageData = try Data(contentsOf: artworkUrl)
+						self.currentArtworkImage = UIImage(data: imageData)
+						self.log("Successfully loaded local artwork from path.")
+					} catch {
+						self.log("Failed to load local artwork image from path: \(artworkPath)")
+					}
+				} else {
+					self.log("Artwork was not a local file URL. For best results with AirPlay, use a local image via require('./path/to/image.png').")
+				}
+			}
+
+			self.settingDebug = options["debug"] as? Bool ?? false
+			self.settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
+			let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
+			let volume = Float(options["volume"] as? Double ?? 1.0)
+			let autoPlay = options["autoPlay"] as? Bool ?? true
+			
+			// Get URL from track
+			guard let urlString = track["url"] as? String, let url = URL(string: urlString) else {
+				self.onError("Invalid URL provided")
+				return
+			}
+			
+			// Clean up previous player if it exists
+			self.prepareForNewPlayback()
+			
+			// Set the static Now Playing metadata immediately. This is crucial for AirPlay.
+			self.setNowPlayingMetadata()
+			
+			// Send loading state immediately so UI can update
+			if autoPlay {
+				self.shouldBePlaying = true
+				self.sendStateEvent(state: self.STATE_LOADING, position: 0, duration: 0, track: self.currentTrack)
+			}
+			
+			// Configure audio session first to ensure proper setup
+			do {
+				try self.configureAudioSession()
+			} catch {
+				self.log("Failed to configure audio session: \(error.localizedDescription)")
+				self.emitPlaybackError("Unable to configure audio playback")
+				// Continue anyway, as playback might still work
+			}
 			
 			// Create player item with URL
 			let headers = options["headers"] as? NSDictionary
@@ -523,50 +523,48 @@ class AudioPro: RCTEventEmitter {
 			
 			// Set preferred forward buffer duration for better buffering
 			playerItem.preferredForwardBufferDuration = 5.0
+
+			// Create player with the item
+			self.player = AVPlayer(playerItem: playerItem)
+			self.player?.volume = volume
+			self.player?.allowsExternalPlayback = true
 			
-			// Return to main queue for player setup
-			DispatchQueue.main.async {
-				// Create player with the item
-				self.player = AVPlayer(playerItem: playerItem)
-				self.player?.volume = volume
+			// Add observer for AirPlay (external playback) status changes
+			self.player?.addObserver(self, forKeyPath: "externalPlaybackActive", options: [.new], context: nil)
+			self.isExternalPlaybackObserverAdded = true
+			
+			// Set automatic buffering
+			self.player?.automaticallyWaitsToMinimizeStalling = true
+			
+			// Always use normal playback speed for live streams
+			self.player?.rate = 1.0
+			self.currentPlaybackSpeed = 1.0
+			
+			// Setup observers for the player item
+			self.setupPlayerItemObservers(playerItem)
+			
+			// Update the remote command center
+			self.setupRemoteTransportControls()
+			
+			// Update the now playing info with the playback state
+			self.updateNowPlayingPlaybackState()
+			
+			// Start playback if autoPlay is true
+			if autoPlay {
+				self.player?.play()
 				
-				// Add observer for AirPlay (external playback) status changes
-				self.player?.addObserver(self, forKeyPath: "externalPlaybackActive", options: [.new], context: nil)
-				self.isExternalPlaybackObserverAdded = true
-				
-				// Set automatic buffering
-				self.player?.automaticallyWaitsToMinimizeStalling = true
-				
-				// Always use normal playback speed for live streams
-				self.player?.rate = 1.0
-				self.currentPlaybackSpeed = 1.0
-				
-				// Setup observers for the player item
-				self.setupPlayerItemObservers(playerItem)
-				
-				// Update the remote command center
-				self.setupRemoteTransportControls()
-				
-				// Update the now playing info with the playback state
-				self.updateNowPlayingPlaybackState()
-				
-				// Start playback if autoPlay is true
-				if autoPlay {
-					self.player?.play()
-					
-					// Set a timeout to check if playback started
-					DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-						guard let self = self else { return }
-						if self.shouldBePlaying && self.player?.rate == 0 {
-							// If still not playing after 5 seconds, try to restart playback
-							self.log("Playback didn't start after 5 seconds, trying to restart")
-							self.player?.play()
-						}
+				// Set a timeout to check if playback started
+				DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+					guard let self = self else { return }
+					if self.shouldBePlaying && self.player?.rate == 0 {
+						// If still not playing after 5 seconds, try to restart playback
+						self.log("Playback didn't start after 5 seconds, trying to restart")
+						self.player?.play()
 					}
-				} else {
-					self.shouldBePlaying = false
-					self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
 				}
+			} else {
+				self.shouldBePlaying = false
+				self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
 			}
 		}
 	}
@@ -1082,8 +1080,7 @@ class AudioPro: RCTEventEmitter {
 				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
 				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
 				setNowPlayingMetadata()
-
-				// Update the playback state after a brief delay to ensure the system has settled.
+				// Dispatch after a brief delay to ensure the system has settled.
 				DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
 					self?.updateNowPlayingPlaybackState()
 				}
@@ -1170,39 +1167,38 @@ class AudioPro: RCTEventEmitter {
 	/// Sets the static metadata for the Now Playing info center.
 	/// This must be called on the main thread.
 	private func setNowPlayingMetadata() {
-		DispatchQueue.main.async { [weak self] in
-			guard let self = self else { return }
-			
-			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 
-			// Use track metadata if available, otherwise fallback to generic info.
-			if let trackInfo = self.currentTrack {
-				nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
-				nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
-			} else {
-				nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
-				nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
-			}
-			
-			// Use the pre-loaded local artwork image.
-			if let image = self.currentArtworkImage {
-				nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-			}
-
-			nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+		// Use track metadata if available, otherwise fallback to generic info.
+		if let trackInfo = self.currentTrack {
+			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
+			nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
+		} else {
+			nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
+			nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
 		}
+		
+		// Use the pre-loaded local artwork image.
+		if let image = self.currentArtworkImage {
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+		}
+
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
 	/// Updates the dynamic playback state for the Now Playing info center.
 	/// This must be called on the main thread.
 	private func updateNowPlayingPlaybackState() {
+		// This must be on the main thread
 		DispatchQueue.main.async { [weak self] in
 			guard let self = self else { return }
-			
+		
+			// Retrieve the existing metadata dictionary.
 			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 			
+			// Update only the dynamic playback properties.
 			if let player = self.player {
 				let rate = player.rate
 				let time = player.currentTime().seconds
@@ -1223,6 +1219,7 @@ class AudioPro: RCTEventEmitter {
 				nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
 			}
 			
+			// Set the updated dictionary back to the Now Playing center.
 			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 		}
 	}
