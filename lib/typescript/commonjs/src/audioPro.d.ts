@@ -51,6 +51,12 @@ export declare const AudioPro: {
      */
     clear(): void;
     /**
+     * Reactivate the audio session after an interruption
+     * This should be called from React Native when handling interruption events
+     * to ensure the audio session is ready for playback to resume
+     */
+    reactivateAudioSession(): void;
+    /**
      * Seek to a specific position in the current track
      *
      * @param positionMs - Position in milliseconds to seek to

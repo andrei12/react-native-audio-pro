@@ -57,6 +57,7 @@ class AudioPro: RCTEventEmitter {
 
 	private var isRateObserverAdded = false
 	private var isStatusObserverAdded = false
+	private var isExternalPlaybackObserverAdded = false
 
 	private var currentPlaybackSpeed: Float = 1.0
 	private var currentTrack: NSDictionary?
@@ -221,7 +222,17 @@ class AudioPro: RCTEventEmitter {
 			let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
 			let shouldResume = options.contains(.shouldResume)
 			
-			// Send interruption ended event to React Native
+			// If the system suggests we should resume and we were previously playing,
+			// resume playback immediately from native code for a seamless experience.
+			if shouldResume && self.shouldBePlaying {
+				log("🟢 Interruption ended with shouldResume=true. Resuming playback natively.")
+				self.resume()
+			} else {
+				log("🟡 Interruption ended but not resuming automatically. Notifying React Native.")
+			}
+			
+			// Send interruption ended event to React Native regardless,
+			// so the JS layer can update its state if needed.
 			let payload: [String: Any] = [
 				"shouldResume": shouldResume,
 				"interruptionType": "ended",
@@ -416,6 +427,10 @@ class AudioPro: RCTEventEmitter {
 
 		// Remove KVO observers from the previous AVPlayerItem
 		if let player = player {
+			if isExternalPlaybackObserverAdded {
+				player.removeObserver(self, forKeyPath: "externalPlaybackActive")
+				isExternalPlaybackObserverAdded = false
+			}
 			if isRateObserverAdded {
 				player.removeObserver(self, forKeyPath: "rate")
 				isRateObserverAdded = false
@@ -493,6 +508,10 @@ class AudioPro: RCTEventEmitter {
 				// Create player with the item
 				self.player = AVPlayer(playerItem: playerItem)
 				self.player?.volume = volume
+				
+				// Add observer for AirPlay (external playback) status changes
+				self.player?.addObserver(self, forKeyPath: "externalPlaybackActive", options: [.new], context: nil)
+				self.isExternalPlaybackObserverAdded = true
 				
 				// Set automatic buffering
 				self.player?.automaticallyWaitsToMinimizeStalling = true
@@ -713,6 +732,10 @@ class AudioPro: RCTEventEmitter {
 		removeAudioSessionInterruptionObserver()
 
 		if let player = player {
+			if isExternalPlaybackObserverAdded {
+				player.removeObserver(self, forKeyPath: "externalPlaybackActive")
+				isExternalPlaybackObserverAdded = false
+			}
 			if isRateObserverAdded {
 				player.removeObserver(self, forKeyPath: "rate")
 				isRateObserverAdded = false
@@ -1028,6 +1051,14 @@ class AudioPro: RCTEventEmitter {
 						startProgressTimer()
 					}
 				}
+			}
+		case "externalPlaybackActive":
+			if let player = object as? AVPlayer, player.isExternalPlaybackActive {
+				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
+				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
+				// We re-push the now playing info, which will trigger artwork loading if needed.
+				let info = getPlaybackInfo()
+				self.updateNowPlayingInfo(time: Double(info.position) / 1000.0, rate: player.rate)
 			}
 		default:
 			super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)

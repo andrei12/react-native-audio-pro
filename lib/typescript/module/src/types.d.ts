@@ -65,6 +65,16 @@ export interface AudioProSeekCompletePayload {
 export interface AudioProPlaybackSpeedChangedPayload {
     speed: number;
 }
+export interface AudioProInterruptionBeganPayload {
+    wasPlaying: boolean;
+    currentTime: number;
+    interruptionType: 'began';
+}
+export interface AudioProInterruptionEndedPayload {
+    shouldResume: boolean;
+    interruptionType: 'ended';
+    options: number;
+}
 export interface AmbientAudioPlayOptions {
     url: string;
     loop?: boolean;
