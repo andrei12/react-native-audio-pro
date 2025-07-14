@@ -467,164 +467,170 @@ class AudioPro: RCTEventEmitter {
 			self.isExplicitlyStopped = false
 			self.currentTrack = track
 
-					// Clear previous artwork and load new artwork if provided.
-		self.currentArtworkImage = nil
-		
-		// Create a completion handler that ensures setNowPlayingMetadata() is called only once
-		let artworkLoadingComplete: () -> Void = {
-			DispatchQueue.main.async {
-				self.log("[NowPlayingInfo] Setting nowPlayingInfo artwork: \(self.currentArtworkImage != nil ? "loaded" : "none")")
-				self.setNowPlayingMetadata()
+			// Clear previous artwork and load new artwork if provided.
+			self.currentArtworkImage = nil
+			
+			// Create a completion handler that ensures setNowPlayingMetadata() is called only once
+			// AND ensures player setup continues regardless of artwork loading outcome
+			let artworkLoadingComplete: () -> Void = {
+				DispatchQueue.main.async {
+					self.log("[NowPlayingInfo] Setting nowPlayingInfo artwork: \(self.currentArtworkImage != nil ? "loaded" : "none")")
+					self.setNowPlayingMetadata()
+					
+					// Continue with player setup after artwork loading is complete
+					self.continuePlayerSetup(track: track, options: options)
+				}
 			}
-		}
-		
-		if let artworkPath = track["artwork"] as? String {
-			self.log("Received artwork path: \(artworkPath)")
-			if let artworkUrl = URL(string: artworkPath) {
-				self.log("Successfully created URL from artwork path. Scheme: \(artworkUrl.scheme ?? "nil"), isFileURL: \(artworkUrl.isFileURL)")
-				if artworkUrl.isFileURL {
-					// Load local artwork synchronously (best for AirPlay)
-					self.log("Attempting to load local artwork from file: \(artworkUrl.path)")
-					
-					// First try to load directly from the URL
-					do {
-						let imageData = try Data(contentsOf: artworkUrl)
-						if let loadedImage = UIImage(data: imageData) {
-							// Ensure image is properly sized for AirPlay (Samsung TVs prefer 600x600)
-							self.currentArtworkImage = self.resizeImageForAirPlay(loadedImage)
-							self.log("Successfully loaded and resized local artwork from path. Original size: \(loadedImage.size), Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
-							artworkLoadingComplete()
-							return
-						} else {
-							self.log("Failed to create UIImage from loaded data")
+			
+			if let artworkPath = track["artwork"] as? String {
+				self.log("Received artwork path: \(artworkPath)")
+				if let artworkUrl = URL(string: artworkPath) {
+					self.log("Successfully created URL from artwork path. Scheme: \(artworkUrl.scheme ?? "nil"), isFileURL: \(artworkUrl.isFileURL)")
+					if artworkUrl.isFileURL {
+						// Load local artwork synchronously (best for AirPlay)
+						self.log("Attempting to load local artwork from file: \(artworkUrl.path)")
+						
+						// First try to load directly from the URL
+						do {
+							let imageData = try Data(contentsOf: artworkUrl)
+							if let loadedImage = UIImage(data: imageData) {
+								// Ensure image is properly sized for AirPlay (Samsung TVs prefer 600x600)
+								self.currentArtworkImage = self.resizeImageForAirPlay(loadedImage)
+								self.log("Successfully loaded and resized local artwork from path. Original size: \(loadedImage.size), Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+								artworkLoadingComplete()
+								return
+							} else {
+								self.log("Failed to create UIImage from loaded data")
+							}
+						} catch {
+							self.log("Failed to load from URL directly, error: \(error.localizedDescription)")
 						}
-					} catch {
-						self.log("Failed to load from URL directly, error: \(error.localizedDescription)")
-					}
-					
-					// If direct loading fails, try to load from bundle by extracting filename
-					let fileName = artworkUrl.lastPathComponent
-					self.log("Attempting to load from bundle with filename: \(fileName)")
-					
-					if let bundleImage = UIImage(named: fileName) {
-						self.currentArtworkImage = self.resizeImageForAirPlay(bundleImage)
-						self.log("Successfully loaded and resized artwork from bundle with filename: \(fileName). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
-						artworkLoadingComplete()
-						return
-					} else {
-						// Try without file extension
-						let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
-						if let bundleImage = UIImage(named: nameWithoutExtension) {
+						
+						// If direct loading fails, try to load from bundle by extracting filename
+						let fileName = artworkUrl.lastPathComponent
+						self.log("Attempting to load from bundle with filename: \(fileName)")
+						
+						if let bundleImage = UIImage(named: fileName) {
 							self.currentArtworkImage = self.resizeImageForAirPlay(bundleImage)
-							self.log("Successfully loaded and resized artwork from bundle without extension: \(nameWithoutExtension). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+							self.log("Successfully loaded and resized artwork from bundle with filename: \(fileName). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
 							artworkLoadingComplete()
 							return
 						} else {
-							self.log("Failed to load artwork from bundle. Tried: \(fileName) and \(nameWithoutExtension)")
+							// Try without file extension
+							let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
+							if let bundleImage = UIImage(named: nameWithoutExtension) {
+								self.currentArtworkImage = self.resizeImageForAirPlay(bundleImage)
+								self.log("Successfully loaded and resized artwork from bundle without extension: \(nameWithoutExtension). Final size: \(self.currentArtworkImage?.size ?? CGSize.zero)")
+								artworkLoadingComplete()
+								return
+							} else {
+								self.log("Failed to load artwork from bundle. Tried: \(fileName) and \(nameWithoutExtension)")
+							}
 						}
+					} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
+						// Load remote artwork asynchronously (required for network requests)
+						self.log("Loading remote artwork from: \(artworkPath)")
+						self.loadRemoteArtwork(from: artworkUrl, completion: artworkLoadingComplete)
+						return // Don't call artworkLoadingComplete() here, it will be called by loadRemoteArtwork
+					} else {
+						self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
 					}
-				} else if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
-					// Load remote artwork asynchronously (required for network requests)
-					self.log("Loading remote artwork from: \(artworkPath)")
-					self.loadRemoteArtwork(from: artworkUrl, completion: artworkLoadingComplete)
-					return // Don't call artworkLoadingComplete() here, it will be called by loadRemoteArtwork
 				} else {
-					self.log("Unsupported artwork URL scheme: \(artworkUrl.scheme ?? "unknown")")
+					self.log("Failed to create URL from artwork path: \(artworkPath)")
 				}
 			} else {
-				self.log("Failed to create URL from artwork path: \(artworkPath)")
+				self.log("No artwork path provided in track")
 			}
-		} else {
-			self.log("No artwork path provided in track")
+			
+			// If we reach here, artwork loading failed or no artwork was provided
+			artworkLoadingComplete()
+		}
+	}
+
+	/// Continues player setup after artwork loading is complete.
+	/// This ensures the player is always set up regardless of artwork loading success/failure.
+	private func continuePlayerSetup(track: NSDictionary, options: NSDictionary) {
+		self.settingDebug = options["debug"] as? Bool ?? false
+		self.settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
+		let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
+		let volume = Float(options["volume"] as? Double ?? 1.0)
+		let autoPlay = options["autoPlay"] as? Bool ?? true
+		
+		// Get URL from track
+		guard let urlString = track["url"] as? String, let url = URL(string: urlString) else {
+			self.onError("Invalid URL provided")
+			return
 		}
 		
-		// If we reach here, artwork loading failed or no artwork was provided
-		artworkLoadingComplete()
-
-			self.settingDebug = options["debug"] as? Bool ?? false
-			self.settingDebugIncludeProgress = options["debugIncludesProgress"] as? Bool ?? false
-			let speed = Float(options["playbackSpeed"] as? Double ?? 1.0)
-			let volume = Float(options["volume"] as? Double ?? 1.0)
-			let autoPlay = options["autoPlay"] as? Bool ?? true
-			
-			// Get URL from track
-			guard let urlString = track["url"] as? String, let url = URL(string: urlString) else {
-				self.onError("Invalid URL provided")
-				return
-			}
-			
-					// Clean up previous player if it exists
+		// Clean up previous player if it exists
 		self.prepareForNewPlayback()
 		
-		// Do NOT set Now Playing metadata yet - wait for artwork to load first for Samsung TVs
-			
-			// Send loading state immediately so UI can update
-			if autoPlay {
-				self.shouldBePlaying = true
-				self.sendStateEvent(state: self.STATE_LOADING, position: 0, duration: 0, track: self.currentTrack)
-			}
-			
-			// Configure audio session first to ensure proper setup
-			do {
-				try self.configureAudioSession()
-			} catch {
-				self.log("Failed to configure audio session: \(error.localizedDescription)")
-				self.emitPlaybackError("Unable to configure audio playback")
-				// Continue anyway, as playback might still work
-			}
-			
-			// Create player item with URL
-			let headers = options["headers"] as? NSDictionary
-			let playerItem = self.createPlayerItem(with: url, headers: headers)
-			
-			// Set preferred forward buffer duration for better buffering
-			playerItem.preferredForwardBufferDuration = 5.0
+		// Send loading state immediately so UI can update
+		if autoPlay {
+			self.shouldBePlaying = true
+			self.sendStateEvent(state: self.STATE_LOADING, position: 0, duration: 0, track: self.currentTrack)
+		}
+		
+		// Configure audio session first to ensure proper setup
+		do {
+			try self.configureAudioSession()
+		} catch {
+			self.log("Failed to configure audio session: \(error.localizedDescription)")
+			self.emitPlaybackError("Unable to configure audio playback")
+			// Continue anyway, as playback might still work
+		}
+		
+		// Create player item with URL
+		let headers = options["headers"] as? NSDictionary
+		let playerItem = self.createPlayerItem(with: url, headers: headers)
+		
+		// Set preferred forward buffer duration for better buffering
+		playerItem.preferredForwardBufferDuration = 5.0
 
-			// Create player with the item
-			self.player = AVPlayer(playerItem: playerItem)
-			self.player?.volume = volume
-			self.player?.allowsExternalPlayback = true
+		// Create player with the item
+		self.player = AVPlayer(playerItem: playerItem)
+		self.player?.volume = volume
+		self.player?.allowsExternalPlayback = true
+		
+		// Add observer for AirPlay (external playback) status changes
+		self.player?.addObserver(self, forKeyPath: "externalPlaybackActive", options: [.new], context: nil)
+		self.isExternalPlaybackObserverAdded = true
+		
+		// Set automatic buffering
+		self.player?.automaticallyWaitsToMinimizeStalling = true
+		
+		// Always use normal playback speed for live streams
+		self.player?.rate = 1.0
+		self.currentPlaybackSpeed = 1.0
+		
+		// Setup observers for the player item
+		self.setupPlayerItemObservers(playerItem)
+		
+		// Update the remote command center
+		self.setupRemoteTransportControls()
+		
+		// Note: setNowPlayingMetadata() is called once after artwork loading completes
+		// This ensures artwork is included and prevents Samsung TV metadata conflicts
+		
+		// Update the now playing info with the playback state
+		self.updateNowPlayingPlaybackState()
+		
+		// Start playback if autoPlay is true
+		if autoPlay {
+			self.player?.play()
 			
-			// Add observer for AirPlay (external playback) status changes
-			self.player?.addObserver(self, forKeyPath: "externalPlaybackActive", options: [.new], context: nil)
-			self.isExternalPlaybackObserverAdded = true
-			
-			// Set automatic buffering
-			self.player?.automaticallyWaitsToMinimizeStalling = true
-			
-			// Always use normal playback speed for live streams
-			self.player?.rate = 1.0
-			self.currentPlaybackSpeed = 1.0
-			
-			// Setup observers for the player item
-			self.setupPlayerItemObservers(playerItem)
-			
-			// Update the remote command center
-			self.setupRemoteTransportControls()
-			
-			// Note: setNowPlayingMetadata() is called once after artwork loading completes
-			// This ensures artwork is included and prevents Samsung TV metadata conflicts
-			
-			// Update the now playing info with the playback state
-			self.updateNowPlayingPlaybackState()
-			
-			// Start playback if autoPlay is true
-			if autoPlay {
-				self.player?.play()
-				
-				// Set a timeout to check if playback started
-				DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
-					guard let self = self else { return }
-					if self.shouldBePlaying && self.player?.rate == 0 {
-						// If still not playing after 5 seconds, try to restart playback
-						self.log("Playback didn't start after 5 seconds, trying to restart")
-						self.player?.play()
-					}
+			// Set a timeout to check if playback started
+			DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+				guard let self = self else { return }
+				if self.shouldBePlaying && self.player?.rate == 0 {
+					// If still not playing after 5 seconds, try to restart playback
+					self.log("Playback didn't start after 5 seconds, trying to restart")
+					self.player?.play()
 				}
-			} else {
-				self.shouldBePlaying = false
-				self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
 			}
+		} else {
+			self.shouldBePlaying = false
+			self.sendStateEvent(state: self.STATE_PAUSED, position: 0, duration: 0)
 		}
 	}
 
