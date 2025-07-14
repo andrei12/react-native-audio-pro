@@ -910,7 +910,7 @@ class AudioPro: RCTEventEmitter {
 		player?.pause()
 		stopTimer()
 		sendPausedStateEvent()
-		updateNowPlayingPlaybackState()
+		updateNowPlayingPlaybackValues()
 		print("🚨 [AudioPro] PAUSE COMPLETED, rate=\(String(describing: player?.rate))")
 		log("[Pause] Completed. player=\(player != nil), player?.rate=\(String(describing: player?.rate))")
 	}
@@ -1666,7 +1666,7 @@ class AudioPro: RCTEventEmitter {
 		stopPlaybackWithoutStateChange()
 		
 		// Emit error state
-		sendEvent(type: EVENT_TYPE_ERROR, track: currentTrack, payload: ["message": errorMessage])
+		sendEvent(type: EVENT_TYPE_PLAYBACK_ERROR, track: currentTrack, payload: ["message": errorMessage])
 		
 		// For live streams, attempt automatic recovery after a short delay
 		DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
