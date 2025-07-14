@@ -495,6 +495,8 @@ class AudioPro: RCTEventEmitter {
 		
 		// Clean up previous player if it exists
 		prepareForNewPlayback()
+		// Set the static Now Playing metadata immediately. This is crucial for AirPlay.
+		setNowPlayingMetadata()
 		
 		// Send loading state immediately so UI can update
 		if autoPlay {
@@ -545,8 +547,8 @@ class AudioPro: RCTEventEmitter {
 				// Update the remote command center
 				self.setupRemoteTransportControls()
 				
-				// Update the now playing info
-				self.updateNowPlayingInfo()
+				// Update the now playing info with the playback state
+				self.updateNowPlayingPlaybackState()
 				
 				// Start playback if autoPlay is true
 				if autoPlay {
@@ -578,7 +580,7 @@ class AudioPro: RCTEventEmitter {
 		player?.pause()
 		stopTimer()
 		sendPausedStateEvent()
-		updateNowPlayingInfo()
+		updateNowPlayingPlaybackState()
 		print("🚨 [AudioPro] PAUSE COMPLETED, rate=\(String(describing: player?.rate))")
 		log("[Pause] Completed. player=\(player != nil), player?.rate=\(String(describing: player?.rate))")
 	}
@@ -638,9 +640,7 @@ class AudioPro: RCTEventEmitter {
 					self.log("[Resume] Player resumed, rate=\(player.rate)")
 					
 					// Update UI and controls
-					let currentTime = player.currentTime().seconds
-					let validTime = (currentTime.isNaN || currentTime.isInfinite) ? 0 : currentTime
-					self.updateNowPlayingInfo()
+					self.updateNowPlayingPlaybackState()
 					self.updateNextPrevControlsState()
 					self.startProgressTimer()
 					
@@ -689,8 +689,8 @@ class AudioPro: RCTEventEmitter {
 		// Do not set currentTrack = nil as STOPPED state should preserve track metadata
 		sendStoppedStateEvent()
 
-		// Update now playing info to reflect a stopped state but keep the artwork intact.
-		updateNowPlayingInfo()
+		// For a clean stop, explicitly clear the now playing info from the control center.
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = [:]
 	}
 
 	/// Resets the player to IDLE state, fully tears down the player instance,
@@ -844,7 +844,7 @@ class AudioPro: RCTEventEmitter {
 		player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in
 			guard let self = self else { return }
 			if completed {
-				self.updateNowPlayingInfo()
+				self.updateNowPlayingPlaybackState()
 				self.completeSeekingAndSendSeekCompleteNoticeEvent(newPosition: validPosition * 1000)
 
 				// Force update the now playing info to ensure controls work
@@ -918,7 +918,7 @@ class AudioPro: RCTEventEmitter {
 		log("Setting playback speed to ", speed)
 		player.rate = Float(speed)
 
-		updateNowPlayingInfo()
+		updateNowPlayingPlaybackState()
 
 		if hasListeners {
 			let playbackInfo = getPlaybackInfo()
@@ -968,7 +968,7 @@ class AudioPro: RCTEventEmitter {
 		player?.seek(to: .zero)
 		stopTimer()
 
-		updateNowPlayingInfo()
+		updateNowPlayingPlaybackState()
 
 		sendStateEvent(state: STATE_STOPPED, position: 0, duration: info.duration, track: currentTrack)
 
@@ -1077,7 +1077,8 @@ class AudioPro: RCTEventEmitter {
 			if let player = object as? AVPlayer, player.isExternalPlaybackActive {
 				log("AirPlay playback has started. Refreshing Now Playing info for external screen.")
 				// When AirPlay starts, the external device (TV) needs the full metadata immediately.
-				self.updateNowPlayingInfo()
+				setNowPlayingMetadata()
+				updateNowPlayingPlaybackState()
 			}
 		default:
 			super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
@@ -1158,26 +1159,11 @@ class AudioPro: RCTEventEmitter {
 		cleanup(emitStateChange: false)
 	}
 
-	/// Updates Now Playing Info with the minimal information required for remote controls.
-	/// Per user requirements, we do not set any metadata like title, artist, or artwork.
-	private func updateNowPlayingInfo() {
-		var nowPlayingInfo = [String: Any]()
+	/// Sets the static metadata for the Now Playing info center.
+	/// This should be called once when the track is first loaded.
+	private func setNowPlayingMetadata() {
+		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 
-		guard let player = player else {
-			// If player is nil, clear the now playing info
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = [:]
-			return
-		}
-		
-		let rate = player.rate
-		let time = player.currentTime().seconds
-		let validTime = (time.isNaN || time.isInfinite) ? 0 : time
-
-		// Essential properties for lock screen/control center UI.
-		nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
-		nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
-		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-		
 		// Use track metadata if available, otherwise fallback to generic info.
 		if let trackInfo = currentTrack {
 			nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
@@ -1191,16 +1177,37 @@ class AudioPro: RCTEventEmitter {
 		if let image = self.currentArtworkImage {
 			nowPlayingInfo[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
 		}
-		
-		// Including duration can help the system UI, even for live streams.
-		if let currentItem = player.currentItem {
-			let itemDuration = currentItem.duration.seconds
-			if !itemDuration.isNaN && !itemDuration.isInfinite {
-				nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
-			}
-		}
 
-		// Assign the simplified dictionary. An empty dictionary is assigned if player is nil.
+		nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
+
+		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
+	}
+
+	/// Updates the dynamic playback state for the Now Playing info center.
+	/// This should be called when playback state changes (e.g., play, pause, seek).
+	private func updateNowPlayingPlaybackState() {
+		var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
+		
+		if let player = player {
+			let rate = player.rate
+			let time = player.currentTime().seconds
+			let validTime = (time.isNaN || time.isInfinite) ? 0 : time
+
+			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = rate
+			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = validTime
+
+			if let currentItem = player.currentItem {
+				let itemDuration = currentItem.duration.seconds
+				if !itemDuration.isNaN && !itemDuration.isInfinite {
+					nowPlayingInfo[MPMediaItemPropertyPlaybackDuration] = itemDuration
+				}
+			}
+		} else {
+			// If player is nil, reflect a stopped state.
+			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0
+			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
+		}
+		
 		MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 	}
 
