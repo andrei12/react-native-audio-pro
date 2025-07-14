@@ -1159,12 +1159,32 @@ class AudioPro: RCTEventEmitter {
 				// CRITICAL: When Samsung TV AirPlay starts, DO NOT update any metadata
 				// Samsung TVs are extremely sensitive to metadata changes during AirPlay activation
 				// The artwork metadata was already set during play() - preserve it completely
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-					// Only update playback state, never touch the metadata dictionary
+				
+				// Force metadata stability for Samsung TVs by ensuring artwork is present
+				DispatchQueue.main.async { [weak self] in
+					guard let self = self else { return }
+					
+					// Check if we have metadata and artwork set
+					let currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
+					let hasArtwork = currentInfo?[MPMediaItemPropertyArtwork] != nil
+					
+					if !hasArtwork {
+						self.log("[Samsung TV] AirPlay started but no artwork detected - Samsung TV will show loading spinner")
+						// Set metadata again to ensure artwork is present
+						self.setNowPlayingMetadata()
+					} else {
+						self.log("[Samsung TV] AirPlay started with artwork present - Samsung TV should display correctly")
+					}
+				}
+				
+				DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+					// Only update playback state after a slightly longer delay for Samsung TV stability
 					// This prevents Samsung TV from losing artwork and showing loading spinner
 					self?.updateNowPlayingPlaybackState()
 					self?.log("[Samsung TV] AirPlay activation complete - playback state updated without touching metadata")
 				}
+			} else if let player = object as? AVPlayer, !player.isExternalPlaybackActive {
+				log("[Samsung TV] AirPlay/Samsung TV playback has ended - returning to local playback")
 			}
 		default:
 			super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
@@ -1276,47 +1296,71 @@ class AudioPro: RCTEventEmitter {
 				// This prevents Samsung TV artwork loading failures seen in community reports
 				let fixedBoundsSize = CGSize(width: 600, height: 600)
 				
-				let artwork = MPMediaItemArtwork(boundsSize: fixedBoundsSize) { [weak self] requestedSize in
-					                                        // CRITICAL: Never return nil - this causes Samsung TV "Catalog returned nil image" errors
-                                        guard let strongSelf = self else { 
-                                                print("[AudioPro] ERROR: Weak self in artwork callback, returning fallback image")
-                                                return image 
-                                        }
+				// Create a strong reference to the image to prevent deallocation during callback
+				let stableImage = image
+				
+				let artwork = MPMediaItemArtwork(boundsSize: fixedBoundsSize) { requestedSize in
+					// CRITICAL: Never return nil - this causes Samsung TV "Catalog returned nil image" errors
+					// Use synchronous returns without weak self to prevent Samsung TV timing issues
 					
-					strongSelf.log("[Samsung TV] Artwork callback - Requested size: \(requestedSize), Fixed bounds: \(fixedBoundsSize)")
+					print("[AudioPro Samsung TV] Artwork callback - Requested size: \(requestedSize), Fixed bounds: \(fixedBoundsSize)")
 					
-					// If requested size is invalid or zero, return pre-sized image
+					// If requested size is invalid or zero, return pre-sized image immediately
 					guard requestedSize.width > 0 && requestedSize.height > 0 else {
-						strongSelf.log("[Samsung TV] Invalid requested size, returning pre-sized image")
-						return image
+						print("[AudioPro Samsung TV] Invalid requested size, returning pre-sized image")
+						return stableImage
 					}
 					
 					// Samsung TVs often request exactly 600x600 - if so, return our pre-sized image
 					if abs(requestedSize.width - 600.0) < 1.0 && abs(requestedSize.height - 600.0) < 1.0 {
-						strongSelf.log("[Samsung TV] Samsung TV 600x600 request detected, returning optimized image")
-						return image
+						print("[AudioPro Samsung TV] Samsung TV 600x600 request detected, returning optimized image")
+						return stableImage
 					}
 					
 					// For other sizes, resize but ensure we always return a valid image
-					strongSelf.log("[Samsung TV] Resizing artwork from 600x600 to \(requestedSize) for AirPlay device")
+					print("[AudioPro Samsung TV] Resizing artwork from 600x600 to \(requestedSize) for AirPlay device")
 					
-					UIGraphicsBeginImageContextWithOptions(requestedSize, false, 0.0)
-					defer { UIGraphicsEndImageContext() }
-					
-					image.draw(in: CGRect(origin: .zero, size: requestedSize))
-					if let resizedImage = UIGraphicsGetImageFromCurrentImageContext() {
-						strongSelf.log("[Samsung TV] Successfully resized artwork to \(resizedImage.size)")
-						return resizedImage
-					} else {
-						// CRITICAL: If resize fails, always return the original rather than nil
-						strongSelf.log("[Samsung TV] Resize failed, returning original to prevent Samsung TV errors")
-						return image
+					// Use autoreleasepool to manage memory during resize operations
+					return autoreleasepool {
+						UIGraphicsBeginImageContextWithOptions(requestedSize, false, 0.0)
+						defer { UIGraphicsEndImageContext() }
+						
+						stableImage.draw(in: CGRect(origin: .zero, size: requestedSize))
+						if let resizedImage = UIGraphicsGetImageFromCurrentImageContext() {
+							print("[AudioPro Samsung TV] Successfully resized artwork to \(resizedImage.size)")
+							return resizedImage
+						} else {
+							// CRITICAL: If resize fails, always return the original rather than nil
+							print("[AudioPro Samsung TV] Resize failed, returning original to prevent Samsung TV errors")
+							return stableImage
+						}
 					}
 				}
 				nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
 				self.log("[Samsung TV] Setting Now Playing artwork with fixed 600x600 bounds for Samsung TV compatibility")
 			} else {
 				self.log("[Samsung TV] No artwork available - Samsung TV may show loading spinner")
+				
+				// EXPERIMENTAL: Create a solid color fallback image to prevent Samsung TV loading spinner
+				// Some Samsung TVs show loading spinner when no artwork is present
+				let fallbackSize = CGSize(width: 600, height: 600)
+				UIGraphicsBeginImageContextWithOptions(fallbackSize, true, 0.0)
+				
+				// Use a dark gray background that won't be distracting
+				UIColor(red: 0.2, green: 0.2, blue: 0.2, alpha: 1.0).setFill()
+				UIRectFill(CGRect(origin: .zero, size: fallbackSize))
+				
+				if let fallbackImage = UIGraphicsGetImageFromCurrentImageContext() {
+					UIGraphicsEndImageContext()
+					
+					let fallbackArtwork = MPMediaItemArtwork(boundsSize: fallbackSize) { _ in
+						return fallbackImage
+					}
+					nowPlayingInfo[MPMediaItemPropertyArtwork] = fallbackArtwork
+					self.log("[Samsung TV] Created fallback artwork to prevent Samsung TV loading spinner")
+				} else {
+					UIGraphicsEndImageContext()
+				}
 			}
 
 			// Set initial playback state for live streams
@@ -1893,5 +1937,39 @@ class AudioPro: RCTEventEmitter {
 		print("  - Current player rate: \(player?.rate ?? 0)")
 		print("  - Should be playing: \(shouldBePlaying)")
 		print("  - Has listeners: \(hasListeners)")
+	}
+	
+	@objc(debugSamsungTVState)
+	func debugSamsungTVState() {
+		print("🚨 [AudioPro Samsung TV] DEBUG STATE:")
+		print("  - Player exists: \(player != nil)")
+		print("  - External playback active: \(player?.isExternalPlaybackActive ?? false)")
+		print("  - Current track: \(currentTrack?["title"] as? String ?? "none")")
+		print("  - Current artwork loaded: \(currentArtworkImage != nil)")
+		
+		let nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
+		print("  - Now Playing Info keys: \(nowPlayingInfo?.keys.sorted() ?? [])")
+		print("  - Has artwork in Now Playing: \(nowPlayingInfo?[MPMediaItemPropertyArtwork] != nil)")
+		print("  - Title: \(nowPlayingInfo?[MPMediaItemPropertyTitle] as? String ?? "none")")
+		print("  - Artist: \(nowPlayingInfo?[MPMediaItemPropertyArtist] as? String ?? "none")")
+		print("  - Is live stream: \(nowPlayingInfo?[MPNowPlayingInfoPropertyIsLiveStream] as? Bool ?? false)")
+		print("  - Playback rate: \(nowPlayingInfo?[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0.0)")
+		
+		if let currentArtworkImage = currentArtworkImage {
+			print("  - Artwork size: \(currentArtworkImage.size)")
+			print("  - Artwork scale: \(currentArtworkImage.scale)")
+		}
+		
+		// Check audio session routing
+		let session = AVAudioSession.sharedInstance()
+		let currentRoute = session.currentRoute
+		print("  - Current audio route: \(currentRoute.outputs.map { "\($0.portType.rawValue) - \($0.portName)" })")
+		
+		// Test artwork callback directly
+		if let nowPlayingArtwork = nowPlayingInfo?[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork {
+			print("  - Testing artwork callback with Samsung TV size (600x600)...")
+			let testImage = nowPlayingArtwork.image(at: CGSize(width: 600, height: 600))
+			print("  - Artwork callback result: \(testImage != nil ? "SUCCESS - \(testImage!.size)" : "FAILED - nil returned")")
+		}
 	}
 }
