@@ -1065,13 +1065,16 @@ class AudioPro: RCTEventEmitter {
 				case .readyToPlay:
 					log("Player item ready to play")
 
-					// Only set metadata if it hasn't been set yet (e.g., if artwork loading is still pending)
+					// Only set metadata if it hasn't been set yet with basic track info
 					// This prevents duplicate metadata updates that can confuse Samsung TVs
-					if MPNowPlayingInfoCenter.default().nowPlayingInfo == nil || MPNowPlayingInfoCenter.default().nowPlayingInfo?.isEmpty == true {
+					let existingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo
+					let hasTrackInfo = existingInfo?[MPMediaItemPropertyTitle] != nil
+					
+					if !hasTrackInfo {
 						log("Now Playing info not set yet, setting metadata")
 						setNowPlayingMetadata()
 					} else {
-						log("Now Playing info already set, skipping metadata update")
+						log("Now Playing info already set with track metadata, skipping duplicate update")
 					}
 					updateNowPlayingPlaybackState()
 					
@@ -1255,12 +1258,20 @@ class AudioPro: RCTEventEmitter {
 		
 		// Set artwork if available - this is critical for Samsung TVs
 		if let image = self.currentArtworkImage {
-			let artwork = MPMediaItemArtwork(boundsSize: image.size) { size in
-				// Ensure we return the image at the requested size
+			// For Samsung TV compatibility, ensure we provide artwork at the exact requested size
+			let artwork = MPMediaItemArtwork(boundsSize: image.size) { requestedSize in
+				// If Samsung TV requests a specific size, resize to match exactly
+				if requestedSize.width > 0 && requestedSize.height > 0 && requestedSize != image.size {
+					UIGraphicsBeginImageContextWithOptions(requestedSize, false, 0.0)
+					image.draw(in: CGRect(origin: .zero, size: requestedSize))
+					let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
+					UIGraphicsEndImageContext()
+					return resizedImage ?? image
+				}
 				return image
 			}
 			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-			self.log("Setting Now Playing artwork. Image size: \(image.size)")
+			self.log("Setting Now Playing artwork for Samsung TV compatibility. Image size: \(image.size)")
 		} else {
 			self.log("No artwork available for Now Playing info")
 		}
@@ -1302,30 +1313,41 @@ class AudioPro: RCTEventEmitter {
 	/// Resizes an image to be optimal for AirPlay and Samsung TV compatibility.
 	/// Samsung TVs typically request 600x600 artwork, so we ensure the image is properly sized.
 	private func resizeImageForAirPlay(_ originalImage: UIImage) -> UIImage {
-		// Target size for optimal Samsung TV compatibility
+		// Target size for optimal Samsung TV compatibility (exact 600x600 square)
 		let targetSize = CGSize(width: 600, height: 600)
 		
-		// If image is already the target size, return as-is
-		if originalImage.size == targetSize {
-			return originalImage
-		}
+		// Create a square canvas and center the image within it
+		UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
 		
-		// Calculate aspect-fit scaling to maintain aspect ratio
+		// Calculate the scale to fit the image within the square while maintaining aspect ratio
 		let originalSize = originalImage.size
 		let aspectRatio = originalSize.width / originalSize.height
 		
-		var newSize: CGSize
+		var drawSize: CGSize
+		var drawRect: CGRect
+		
 		if aspectRatio > 1 {
-			// Landscape - fit to width
-			newSize = CGSize(width: targetSize.width, height: targetSize.width / aspectRatio)
+			// Landscape - fit to width, center vertically
+			drawSize = CGSize(width: targetSize.width, height: targetSize.width / aspectRatio)
+			drawRect = CGRect(
+				x: 0,
+				y: (targetSize.height - drawSize.height) / 2,
+				width: drawSize.width,
+				height: drawSize.height
+			)
 		} else {
-			// Portrait or square - fit to height
-			newSize = CGSize(width: targetSize.height * aspectRatio, height: targetSize.height)
+			// Portrait or square - fit to height, center horizontally
+			drawSize = CGSize(width: targetSize.height * aspectRatio, height: targetSize.height)
+			drawRect = CGRect(
+				x: (targetSize.width - drawSize.width) / 2,
+				y: 0,
+				width: drawSize.width,
+				height: drawSize.height
+			)
 		}
 		
-		// Create the resized image
-		UIGraphicsBeginImageContextWithOptions(newSize, false, 0.0)
-		originalImage.draw(in: CGRect(origin: .zero, size: newSize))
+		// Draw the image centered in the square canvas
+		originalImage.draw(in: drawRect)
 		let resizedImage = UIGraphicsGetImageFromCurrentImageContext()
 		UIGraphicsEndImageContext()
 		
