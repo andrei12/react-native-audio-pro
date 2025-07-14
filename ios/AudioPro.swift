@@ -95,10 +95,13 @@ class AudioPro: RCTEventEmitter {
 			object: nil
 		)
 		
-		// Automatically check background audio configuration on initialization (SwiftAudioEx pattern)
+		// Automatically check background audio configuration on initialization
 		checkBackgroundAudioConfiguration()
 		
-		log("AudioPro module initialized with interruption observer and SwiftAudioEx patterns")
+		// Initialize with hardcoded artwork to ensure it's always available
+		currentArtworkImage = createHardcodedArtwork()
+		
+		log("AudioPro module initialized with interruption observer and hardcoded artwork")
 	}
 	
 	@objc private func testNotificationReceived(_ notification: Notification) {
@@ -502,14 +505,12 @@ class AudioPro: RCTEventEmitter {
 			// IMMEDIATE: Set basic metadata first (never block for artwork)
 			self.setBasicNowPlayingMetadata()
 			
-			// ASYNC: Load artwork in background without blocking
+			// ASYNC: Try to load custom artwork in background (optional)
 			if let artworkPath = track["artwork"] as? String {
-				self.log("Loading artwork asynchronously: \(artworkPath)")
+				self.log("Attempting to load custom artwork: \(artworkPath)")
 				self.loadArtworkAsync(from: artworkPath)
 			} else {
-				// Set fallback artwork for AirPlay compatibility
-				self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-				self.updateArtworkInNowPlayingInfo()
+				self.log("No custom artwork path - using hardcoded artwork")
 			}
 			
 			// Continue with player setup immediately
@@ -517,286 +518,14 @@ class AudioPro: RCTEventEmitter {
 		}
 	}
 
-	/// Enhanced artwork loading method specifically designed for React Native assets and Samsung TV compatibility
-	/// This method attempts multiple loading strategies and always ensures we have a valid image before completion
-	private func loadReactNativeArtwork(from artworkPath: String, completion: @escaping () -> Void) {
-		log("[Artwork] Starting artwork loading from: \(artworkPath)")
-		
-		// Strategy 1: Try to load as React Native bundle resource first (most reliable)
-		if let bundleImage = loadFromReactNativeBundleSync(artworkPath: artworkPath) {
-			self.currentArtworkImage = self.prepareImageForSamsungTV(bundleImage)
-			log("[Artwork] ✅ Successfully loaded from React Native bundle")
-			completion()
-			return
-		}
-		
-		// Strategy 2: Handle different URI schemes
-		if let artworkUrl = URL(string: artworkPath) {
-			log("[Artwork] Trying URL-based loading. Scheme: \(artworkUrl.scheme ?? "nil")")
-			
-			// Handle HTTP/HTTPS URLs (remote images)
-			if artworkUrl.scheme == "http" || artworkUrl.scheme == "https" {
-				loadRemoteArtworkForSamsungTV(from: artworkUrl, completion: completion)
-				return
-			}
-			
-			// Handle file:// URLs 
-			if artworkUrl.isFileURL || artworkUrl.scheme == "file" {
-				loadLocalArtworkForSamsungTV(from: artworkUrl, completion: completion)
-				return
-			}
-		}
-		
-		// Strategy 3: Fallback - try to extract filename and load from bundle
-		let fileName = URL(string: artworkPath)?.lastPathComponent ?? artworkPath
-		if let bundleImage = loadFromAppBundleSync(fileName: fileName) {
-			self.currentArtworkImage = self.prepareImageForSamsungTV(bundleImage)
-			log("[Artwork] ✅ Successfully loaded from app bundle as fallback")
-			completion()
-			return
-		}
-		
-		// Strategy 4: If all else fails, create a high-quality fallback image
-		// Samsung TVs REQUIRE artwork to prevent loading spinner
-		log("[Artwork] ⚠️ All loading strategies failed, creating Samsung TV compatible fallback")
-		self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-		completion()
-	}
-	
-	/// Synchronously loads artwork from React Native bundle with multiple filename strategies
-	private func loadFromReactNativeBundleSync(artworkPath: String) -> UIImage? {
-		// Extract potential filename from various React Native asset URI formats
-		var fileName = ""
-		
-		// Handle React Native asset URLs
-		if artworkPath.contains("RCTAssetURLProvider") || artworkPath.contains("assets-library") || artworkPath.contains("ph://") {
-			// Try to extract filename from React Native asset path
-			if let url = URL(string: artworkPath) {
-				fileName = url.lastPathComponent
-			}
-		} else if let url = URL(string: artworkPath) {
-			fileName = url.lastPathComponent
-		} else {
-			fileName = artworkPath
-		}
-		
-		// Clean up filename
-		if fileName.contains("?") {
-			fileName = String(fileName.split(separator: "?")[0])
-		}
-		if fileName.contains("#") {
-			fileName = String(fileName.split(separator: "#")[0])
-		}
-		
-		log("[Artwork] Attempting bundle load with filename: \(fileName)")
-		return loadFromAppBundleSync(fileName: fileName)
-	}
-	
-	/// Synchronously loads artwork from app bundle with comprehensive filename matching
-	private func loadFromAppBundleSync(fileName: String) -> UIImage? {
-		// Try exact filename first
-		if let image = UIImage(named: fileName) {
-			log("[Artwork] Found exact match: \(fileName)")
-			return image
-		}
-		
-		// Try without file extension
-		let nameWithoutExtension = fileName.components(separatedBy: ".").first ?? fileName
-		if let image = UIImage(named: nameWithoutExtension) {
-			log("[Artwork] Found without extension: \(nameWithoutExtension)")
-			return image
-		}
-		
-		// Try with common image formats
-		let extensions = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]
-		for ext in extensions {
-			let fileNameWithExt = nameWithoutExtension + "." + ext
-			if let image = UIImage(named: fileNameWithExt) {
-				log("[Artwork] Found with extension: \(fileNameWithExt)")
-				return image
-			}
-		}
-		
-		log("[Artwork] No bundle image found for: \(fileName)")
-		return nil
-	}
 
-	/// Load artwork from local file path with Samsung TV optimization
-	private func loadLocalArtworkForSamsungTV(from url: URL, completion: @escaping () -> Void) {
-		DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-			guard let self = self else { return }
-			
-			do {
-				let imageData = try Data(contentsOf: url)
-				if let loadedImage = UIImage(data: imageData) {
-					DispatchQueue.main.async {
-						self.currentArtworkImage = self.prepareImageForSamsungTV(loadedImage)
-						self.log("[Artwork] ✅ Successfully loaded local file: \(url.lastPathComponent)")
-						completion()
-					}
-				} else {
-					DispatchQueue.main.async {
-						self.log("[Artwork] ❌ Failed to create UIImage from local file data")
-						self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-						completion()
-					}
-				}
-			} catch {
-				DispatchQueue.main.async {
-					self.log("[Artwork] ❌ Failed to load local file: \(error.localizedDescription)")
-					self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-					completion()
-				}
-			}
-		}
-	}
-
-	/// Load artwork from remote URL with Samsung TV optimization and timeout
-	private func loadRemoteArtworkForSamsungTV(from url: URL, completion: @escaping () -> Void) {
-		log("[Artwork] Loading remote artwork from: \(url)")
-		
-		// Create a URLSession with timeout for faster fallback
-		let config = URLSessionConfiguration.default
-		config.timeoutIntervalForRequest = 10.0
-		config.timeoutIntervalForResource = 15.0
-		let session = URLSession(configuration: config)
-		
-		session.dataTask(with: url) { [weak self] data, response, error in
-			guard let self = self else { return }
-			
-			DispatchQueue.main.async {
-				if let error = error {
-					self.log("[Artwork] ❌ Remote artwork failed: \(error.localizedDescription)")
-					self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-				} else if let data = data, let image = UIImage(data: data) {
-					self.currentArtworkImage = self.prepareImageForSamsungTV(image)
-					self.log("[Artwork] ✅ Successfully loaded remote artwork")
-				} else {
-					self.log("[Artwork] ❌ Invalid remote artwork data")
-					self.currentArtworkImage = self.createSamsungTVFallbackArtwork()
-				}
-				completion()
-			}
-		}.resume()
-	}
 	
-	/// Prepares an image for optimal Samsung TV AirPlay compatibility
-	/// Samsung TVs work best with exactly 600x600 pixel images
-	private func prepareImageForSamsungTV(_ originalImage: UIImage) -> UIImage {
-		let targetSize = CGSize(width: 600, height: 600)
-		
-		// If image is already exactly 600x600, return as-is for optimal performance
-		if originalImage.size.width == 600 && originalImage.size.height == 600 {
-			log("[Artwork] Image already optimized for Samsung TV (600x600)")
-			return originalImage
-		}
-		
-		log("[Artwork] Optimizing image for Samsung TV: \(originalImage.size) -> \(targetSize)")
-		
-		UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0) // Use scale 1.0 for consistency
-		defer { UIGraphicsEndImageContext() }
-		
-		// Calculate aspect-fit dimensions
-		let originalSize = originalImage.size
-		let aspectRatio = originalSize.width / originalSize.height
-		
-		let drawSize: CGSize
-		let drawRect: CGRect
-		
-		if aspectRatio > 1 {
-			// Landscape - fit to width, center vertically
-			drawSize = CGSize(width: targetSize.width, height: targetSize.width / aspectRatio)
-			drawRect = CGRect(
-				x: 0,
-				y: (targetSize.height - drawSize.height) / 2,
-				width: drawSize.width,
-				height: drawSize.height
-			)
-		} else {
-			// Portrait or square - fit to height, center horizontally
-			drawSize = CGSize(width: targetSize.height * aspectRatio, height: targetSize.height)
-			drawRect = CGRect(
-				x: (targetSize.width - drawSize.width) / 2,
-				y: 0,
-				width: drawSize.width,
-				height: drawSize.height
-			)
-		}
-		
-		// Draw with high quality
-		originalImage.draw(in: drawRect)
-		return UIGraphicsGetImageFromCurrentImageContext() ?? originalImage
-	}
-	
-	/// Creates a high-quality fallback artwork specifically for Samsung TV compatibility
-	/// Samsung TVs show a loading spinner when no artwork is present, so we must always provide something
+	/// Creates a Samsung TV compatible fallback artwork when no artwork is available
+	/// Samsung TVs show a loading spinner if artwork callback fails or returns nil
+	/// This just returns our hardcoded artwork for consistency
 	private func createSamsungTVFallbackArtwork() -> UIImage {
-		let size = CGSize(width: 600, height: 600)
-		
-		UIGraphicsBeginImageContextWithOptions(size, false, 1.0)
-		defer { UIGraphicsEndImageContext() }
-		
-		// Create an attractive gradient background instead of plain gray
-		let context = UIGraphicsGetCurrentContext()
-		let colorSpace = CGColorSpaceCreateDeviceRGB()
-		
-		// Use music-themed colors
-		let colors = [
-			UIColor(red: 0.05, green: 0.05, blue: 0.15, alpha: 1.0).cgColor, // Dark navy
-			UIColor(red: 0.15, green: 0.1, blue: 0.25, alpha: 1.0).cgColor,  // Purple
-			UIColor(red: 0.2, green: 0.15, blue: 0.3, alpha: 1.0).cgColor    // Lighter purple
-		]
-		
-		if let gradient = CGGradient(colorsSpace: colorSpace, colors: colors as CFArray, locations: nil) {
-			context?.drawLinearGradient(
-				gradient,
-				start: CGPoint(x: 0, y: 0),
-				end: CGPoint(x: size.width, y: size.height),
-				options: []
-			)
-		}
-		
-		// Add a radio wave icon in the center
-		let iconSize: CGFloat = 200
-		let iconRect = CGRect(
-			x: (size.width - iconSize) / 2,
-			y: (size.height - iconSize) / 2,
-			width: iconSize,
-			height: iconSize
-		)
-		
-		// Draw radio wave symbol
-		UIColor.white.withAlphaComponent(0.2).setFill()
-		let outerPath = UIBezierPath(ovalIn: iconRect)
-		outerPath.fill()
-		
-		// Inner circle
-		let innerSize: CGFloat = iconSize * 0.6
-		let innerRect = CGRect(
-			x: (size.width - innerSize) / 2,
-			y: (size.height - innerSize) / 2,
-			width: innerSize,
-			height: innerSize
-		)
-		UIColor.white.withAlphaComponent(0.3).setFill()
-		let innerPath = UIBezierPath(ovalIn: innerRect)
-		innerPath.fill()
-		
-		// Center dot
-		let dotSize: CGFloat = iconSize * 0.2
-		let dotRect = CGRect(
-			x: (size.width - dotSize) / 2,
-			y: (size.height - dotSize) / 2,
-			width: dotSize,
-			height: dotSize
-		)
-		UIColor.white.withAlphaComponent(0.5).setFill()
-		let dotPath = UIBezierPath(ovalIn: dotRect)
-		dotPath.fill()
-		
-		let fallbackImage = UIGraphicsGetImageFromCurrentImageContext() ?? UIImage()
-		log("[Artwork] Created Samsung TV compatible fallback artwork")
-		return fallbackImage
+		log("[Artwork] Using hardcoded artwork as Samsung TV fallback")
+		return createHardcodedArtwork()
 	}
 
 	/// Continues player setup after artwork loading is complete.
@@ -1491,100 +1220,9 @@ class AudioPro: RCTEventEmitter {
 		cleanup(emitStateChange: false)
 	}
 
-	/// Sets the static metadata for the Now Playing info center.
-	/// This must be called on the main thread.
-	/// CRITICAL: Only call this AFTER artwork loading is complete to ensure Samsung TV compatibility
-	private func setNowPlayingMetadata() {
-		// Ensure we're on the main thread
-		DispatchQueue.main.async { [weak self] in
-			guard let self = self else { return }
-			
-			log("[Samsung TV] Setting Now Playing metadata")
-			
-			// Create completely fresh metadata dictionary
-			var nowPlayingInfo = [String: Any]()
 
-			// Set basic metadata
-			if let trackInfo = self.currentTrack {
-				nowPlayingInfo[MPMediaItemPropertyTitle] = trackInfo["title"] as? String ?? "Live Radio"
-				nowPlayingInfo[MPMediaItemPropertyArtist] = trackInfo["artist"] as? String ?? "Now Streaming"
-			} else {
-				nowPlayingInfo[MPMediaItemPropertyTitle] = "Live Radio"
-				nowPlayingInfo[MPMediaItemPropertyArtist] = "Now Streaming"
-			}
-			
-			// CRITICAL: Always set live stream flag for radio to prevent seeking controls
-			nowPlayingInfo[MPNowPlayingInfoPropertyIsLiveStream] = true
-			
-			// CRITICAL: Always ensure artwork is present - Samsung TV shows loading spinner without it
-			// At this point, currentArtworkImage is guaranteed to be valid (either loaded or fallback)
-			if let artworkImage = self.currentArtworkImage {
-				self.log("[Samsung TV] Setting artwork - Image size: \(artworkImage.size)")
-				self.setSamsungTVCompatibleArtwork(image: artworkImage, in: &nowPlayingInfo)
-			} else {
-				// This should never happen due to our fallback system, but just in case
-				self.log("[Samsung TV] WARNING: No artwork available, creating emergency fallback")
-				let emergencyFallback = self.createSamsungTVFallbackArtwork()
-				self.setSamsungTVCompatibleArtwork(image: emergencyFallback, in: &nowPlayingInfo)
-			}
+	
 
-			// Set initial playback state (will be updated by updateNowPlayingPlaybackValues)
-			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
-			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
-			
-			// Apply the metadata in one atomic operation
-			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
-			self.log("[Samsung TV] ✅ Now Playing metadata set successfully with guaranteed artwork")
-		}
-	}
-	
-	/// Sets artwork in metadata with Samsung TV specific optimizations
-	/// This method ensures the artwork callback NEVER returns nil, which is critical for Samsung TV compatibility
-	private func setSamsungTVCompatibleArtwork(image: UIImage, in nowPlayingInfo: inout [String: Any]) {
-		// Samsung TVs work best with exactly 600x600 bounds
-		let samsungTVBounds = CGSize(width: 600, height: 600)
-		
-		// Create a strong reference to prevent deallocation during callback
-		let stableImage = image
-		
-		// CRITICAL: Artwork callback must NEVER return nil for Samsung TV compatibility
-		let artwork = MPMediaItemArtwork(boundsSize: samsungTVBounds) { requestedSize in
-			self.log("[Samsung TV] Artwork callback - Requested: \(requestedSize), Providing: \(stableImage.size)")
-			
-			// Samsung TVs are very specific about size requirements
-			// If they request exactly our bounds size, return the image as-is for best performance
-			if abs(requestedSize.width - samsungTVBounds.width) < 1.0 && 
-			   abs(requestedSize.height - samsungTVBounds.height) < 1.0 {
-				self.log("[Samsung TV] ✅ Exact size match - returning optimized image")
-				return stableImage
-			}
-			
-			// For any other size request, safely resize but never return nil
-			guard requestedSize.width > 0 && requestedSize.height > 0 else {
-				self.log("[Samsung TV] ⚠️ Invalid size requested, returning stable image")
-				return stableImage
-			}
-			
-			// Attempt resize with fallback to original
-			let resizedImage = self.safeResizeImage(stableImage, to: requestedSize) ?? stableImage
-			self.log("[Samsung TV] ✅ Resized for request: \(requestedSize)")
-			return resizedImage
-		}
-		
-		nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-		log("[Samsung TV] ✅ Samsung TV compatible artwork callback configured")
-	}
-	
-	/// Safely resizes an image with proper error handling and memory management
-	private func safeResizeImage(_ image: UIImage, to size: CGSize) -> UIImage? {
-		return autoreleasepool {
-			UIGraphicsBeginImageContextWithOptions(size, false, 1.0) // Fixed scale for consistency
-			defer { UIGraphicsEndImageContext() }
-			
-			image.draw(in: CGRect(origin: .zero, size: size))
-			return UIGraphicsGetImageFromCurrentImageContext()
-		}
-	}
 
 
 
@@ -2116,13 +1754,13 @@ class AudioPro: RCTEventEmitter {
 	}
 
 	/// Sets basic Now Playing metadata immediately (title, artist, live stream flag)
-	/// This is called immediately when play() starts - never blocks for artwork
+	/// This is called immediately when play() starts - ALWAYS includes hardcoded artwork
 	private func setBasicNowPlayingMetadata() {
 		// Always set on main thread
 		DispatchQueue.main.async { [weak self] in
 			guard let self = self else { return }
 			
-			log("[AirPlay Fix] Setting basic metadata immediately")
+			log("[AirPlay Fix] Setting basic metadata with GUARANTEED artwork")
 			
 			// Create basic metadata dictionary
 			var nowPlayingInfo = [String: Any]()
@@ -2143,14 +1781,21 @@ class AudioPro: RCTEventEmitter {
 			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
 			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
 			
-			// Apply immediately - artwork will be added later
+			// CRITICAL: ALWAYS include artwork immediately (prevents loading spinner)
+			let hardcodedImage = self.createHardcodedArtwork()
+			let artwork = MPMediaItemArtwork(boundsSize: hardcodedImage.size) { _ in
+				return hardcodedImage
+			}
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
+			
+			// Apply immediately with guaranteed artwork
 			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 			
-			log("[AirPlay Fix] Basic metadata set - artwork will load asynchronously")
+			log("[AirPlay Fix] Basic metadata set with HARDCODED artwork - no spinner possible!")
 		}
 	}
 
-	/// Loads artwork asynchronously in the background - never blocks playback or metadata setup
+	/// Attempts to load custom artwork asynchronously - hardcoded artwork is already set as fallback
 	private func loadArtworkAsync(from artworkPath: String) {
 		DispatchQueue.global(qos: .background).async { [weak self] in
 			guard let self = self else { return }
@@ -2161,30 +1806,31 @@ class AudioPro: RCTEventEmitter {
 			if artworkPath.hasPrefix("file://") {
 				let fileURL = URL(string: artworkPath)
 				loadedImage = fileURL.flatMap { UIImage(contentsOfFile: $0.path) }
+				self.log("[Custom Artwork] Tried file:// path: \(loadedImage != nil ? "SUCCESS" : "FAILED")")
 			} else if !artworkPath.hasPrefix("http") {
 				// React Native asset bundle
 				let assetName = artworkPath.replacingOccurrences(of: "file://", with: "")
 				loadedImage = UIImage(named: assetName)
+				self.log("[Custom Artwork] Tried bundle asset '\(assetName)': \(loadedImage != nil ? "SUCCESS" : "FAILED")")
 			} else {
 				// Remote URL - skip for now to avoid network delays
-				log("[AirPlay Fix] Skipping remote artwork to avoid delays: \(artworkPath)")
+				self.log("[Custom Artwork] Skipping remote URL to avoid delays: \(artworkPath)")
+				return
 			}
 			
-			// Resize to Samsung TV optimal size if loaded
+			// Only update if we successfully loaded custom artwork
 			if let image = loadedImage {
-				loadedImage = self.resizeImageForSamsungTV(image)
-				log("[AirPlay Fix] Artwork loaded and resized: \(image.size)")
+				let resizedImage = self.resizeImageForSamsungTV(image)
+				self.log("[Custom Artwork] Successfully loaded and resized custom artwork")
+				
+				// Update to custom artwork
+				DispatchQueue.main.async { [weak self] in
+					guard let self = self else { return }
+					self.currentArtworkImage = resizedImage
+					self.updateArtworkInNowPlayingInfo()
+				}
 			} else {
-				// Use fallback for AirPlay compatibility
-				loadedImage = self.createSamsungTVFallbackArtwork()
-				log("[AirPlay Fix] Using fallback artwork for AirPlay compatibility")
-			}
-			
-			// Update artwork in Now Playing info
-			DispatchQueue.main.async { [weak self] in
-				guard let self = self else { return }
-				self.currentArtworkImage = loadedImage
-				self.updateArtworkInNowPlayingInfo()
+				self.log("[Custom Artwork] Failed to load - keeping hardcoded artwork as fallback")
 			}
 		}
 	}
@@ -2222,5 +1868,37 @@ class AudioPro: RCTEventEmitter {
 		UIGraphicsEndImageContext()
 		
 		return resizedImage
+	}
+
+	/// Creates a guaranteed hardcoded image for AirPlay compatibility
+	/// This ensures we ALWAYS have artwork, preventing loading spinners
+	private func createHardcodedArtwork() -> UIImage {
+		// Create a 600x600 solid color image with text overlay
+		let size = CGSize(width: 600, height: 600)
+		let renderer = UIGraphicsImageRenderer(size: size)
+		
+		let image = renderer.image { context in
+			// Set background color (dark blue)
+			UIColor(red: 0.1, green: 0.1, blue: 0.3, alpha: 1.0).setFill()
+			context.fill(CGRect(origin: .zero, size: size))
+			
+			// Add border
+			UIColor(red: 0.2, green: 0.2, blue: 0.5, alpha: 1.0).setStroke()
+			context.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20), width: 4)
+			
+			// Add text
+			let text = "🎵\nLive Radio"
+			let attributes: [NSAttributedString.Key: Any] = [
+				.font: UIFont.boldSystemFont(ofSize: 48),
+				.foregroundColor: UIColor.white,
+				.textAlignment: NSTextAlignment.center
+			]
+			
+			let textRect = CGRect(x: 50, y: 250, width: size.width - 100, height: 100)
+			text.draw(in: textRect, withAttributes: attributes)
+		}
+		
+		log("[Hardcoded Artwork] Created 600x600 hardcoded image for AirPlay")
+		return image
 	}
 }
