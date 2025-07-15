@@ -100,7 +100,6 @@ class AudioPro: RCTEventEmitter {
 		
 		// Initialize with hardcoded artwork to ensure it's always available
 		currentArtworkImage = createHardcodedArtwork()
-		log("[Init] AudioPro module initialized with hardcoded artwork - size: \(currentArtworkImage?.size ?? CGSize.zero)")
 		
 		log("AudioPro module initialized with interruption observer and hardcoded artwork")
 	}
@@ -486,7 +485,7 @@ class AudioPro: RCTEventEmitter {
 		NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: player?.currentItem)
 	}
 
-	@objc(play:options:)
+	@objc(play:withOptions:)
 	func play(track: NSDictionary, options: NSDictionary) {
 		// Ensure all setup is on the main thread to prevent race conditions.
 		DispatchQueue.main.async { [weak self] in
@@ -500,8 +499,8 @@ class AudioPro: RCTEventEmitter {
 			self.isExplicitlyStopped = false
 			self.currentTrack = track
 
-			// DON'T clear artwork - keep hardcoded fallback
-			self.log("[Play] Starting playback with track: \(track["title"] as? String ?? "Unknown")")
+			// Clear previous artwork but don't wait for new artwork
+			self.currentArtworkImage = nil
 			
 			// IMMEDIATE: Set basic metadata first (never block for artwork)
 			self.setBasicNowPlayingMetadata()
@@ -1754,44 +1753,6 @@ class AudioPro: RCTEventEmitter {
 		}
 	}
 
-	/// Creates a guaranteed hardcoded image for AirPlay compatibility
-	/// This ensures we ALWAYS have artwork, preventing loading spinners
-	private func createHardcodedArtwork() -> UIImage {
-		// Create a 600x600 solid color image with text overlay
-		let size = CGSize(width: 600, height: 600)
-		let renderer = UIGraphicsImageRenderer(size: size)
-		
-		let image = renderer.image { context in
-			// Set background color (dark blue)
-			UIColor(red: 0.1, green: 0.1, blue: 0.3, alpha: 1.0).setFill()
-			context.fill(CGRect(origin: .zero, size: size))
-			
-			// Add border
-			UIColor(red: 0.2, green: 0.2, blue: 0.5, alpha: 1.0).setStroke()
-			context.cgContext.setLineWidth(4)
-			context.cgContext.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20))
-			
-			// Add text
-			let text = "🎵\nLive Radio"
-			
-			// Create paragraph style for center alignment
-			let paragraphStyle = NSMutableParagraphStyle()
-			paragraphStyle.alignment = .center
-			
-			let attributes: [NSAttributedString.Key: Any] = [
-				.font: UIFont.boldSystemFont(ofSize: 48),
-				.foregroundColor: UIColor.white,
-				.paragraphStyle: paragraphStyle
-			]
-			
-			let textRect = CGRect(x: 50, y: 250, width: size.width - 100, height: 100)
-			text.draw(in: textRect, withAttributes: attributes)
-		}
-		
-		log("[Hardcoded Artwork] Created 600x600 hardcoded image for AirPlay - size: \(image.size)")
-		return image
-	}
-
 	/// Sets basic Now Playing metadata immediately (title, artist, live stream flag)
 	/// This is called immediately when play() starts - ALWAYS includes hardcoded artwork
 	private func setBasicNowPlayingMetadata() {
@@ -1820,90 +1781,17 @@ class AudioPro: RCTEventEmitter {
 			nowPlayingInfo[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
 			nowPlayingInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0.0
 			
-			// CRITICAL: Create artwork immediately and set it directly
+			// CRITICAL: ALWAYS include artwork immediately (prevents loading spinner)
 			let hardcodedImage = self.createHardcodedArtwork()
-			self.log("[AirPlay Fix] Created hardcoded image - size: \(hardcodedImage.size)")
-			
-			// Store the image for later use
-			self.currentArtworkImage = hardcodedImage
-			
-			// SAMSUNG TV FIX: Create artwork WITHOUT callback (some devices don't handle callbacks well)
-			// Create multiple sizes to ensure compatibility
-			let sizes = [
-				CGSize(width: 600, height: 600),
-				CGSize(width: 300, height: 300),
-				CGSize(width: 200, height: 200)
-			]
-			
-			var bestArtwork: MPMediaItemArtwork?
-			
-			// Try different approaches to create artwork
-			for size in sizes {
-				let resizedImage = self.resizeImageForSamsungTV(hardcodedImage, targetSize: size)
-				
-				// Approach 1: Static artwork without callback
-				let staticArtwork = MPMediaItemArtwork(boundsSize: resizedImage.size) { _ in
-					return resizedImage
-				}
-				
-				// Test if this artwork works
-				if staticArtwork.image(at: size) != nil {
-					self.log("[AirPlay Fix] Static artwork created successfully for size: \(size)")
-					bestArtwork = staticArtwork
-					break
-				}
+			let artwork = MPMediaItemArtwork(boundsSize: hardcodedImage.size) { _ in
+				return hardcodedImage
 			}
-			
-			// Fallback: Original callback approach
-			if bestArtwork == nil {
-				self.log("[AirPlay Fix] Using fallback callback approach")
-				bestArtwork = MPMediaItemArtwork(boundsSize: hardcodedImage.size) { [weak self] requestedSize in
-					self?.log("[AirPlay Fix] Artwork callback called - requested size: \(requestedSize)")
-					return hardcodedImage
-				}
-			}
-			
-			// Set the artwork
-			if let artwork = bestArtwork {
-				nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
-				self.log("[AirPlay Fix] Artwork object created and added to nowPlayingInfo")
-			}
+			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
 			
 			// Apply immediately with guaranteed artwork
 			MPNowPlayingInfoCenter.default().nowPlayingInfo = nowPlayingInfo
 			
-			self.log("[AirPlay Fix] Basic metadata set with HARDCODED artwork - no spinner possible!")
-			
-			// Double-check that artwork was set
-			if let currentInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo,
-			   let currentArtwork = currentInfo[MPMediaItemPropertyArtwork] as? MPMediaItemArtwork {
-				self.log("[AirPlay Fix] ✅ Artwork confirmed in Now Playing info")
-				
-				// Test the artwork callback to see if it works
-				DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-					self?.testArtworkCallback(artwork: currentArtwork)
-				}
-			} else {
-				self.log("[AirPlay Fix] ❌ ERROR: Artwork not found in Now Playing info!")
-			}
-		}
-	}
-	
-	/// Test method to verify artwork callback is working
-	private func testArtworkCallback(artwork: MPMediaItemArtwork) {
-		log("[AirPlay Fix] Testing artwork callback with different sizes...")
-		
-		// Test with various sizes that Samsung TVs might request
-		let testSizes = [
-			CGSize(width: 600, height: 600),
-			CGSize(width: 300, height: 300),
-			CGSize(width: 200, height: 200),
-			CGSize(width: 100, height: 100)
-		]
-		
-		for size in testSizes {
-			let testImage = artwork.image(at: size)
-			log("[AirPlay Fix] Artwork callback test for \(size): \(testImage != nil ? "SUCCESS" : "FAILED")")
+			log("[AirPlay Fix] Basic metadata set with HARDCODED artwork - no spinner possible!")
 		}
 	}
 
@@ -1932,7 +1820,7 @@ class AudioPro: RCTEventEmitter {
 			
 			// Only update if we successfully loaded custom artwork
 			if let image = loadedImage {
-				let resizedImage = self.resizeImageForSamsungTV(image, targetSize: CGSize(width: 600, height: 600))
+				let resizedImage = self.resizeImageForSamsungTV(image)
 				self.log("[Custom Artwork] Successfully loaded and resized custom artwork")
 				
 				// Update to custom artwork
@@ -1957,12 +1845,10 @@ class AudioPro: RCTEventEmitter {
 			// Get existing Now Playing info to preserve it
 			var nowPlayingInfo = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [String: Any]()
 			
-			// Create new artwork without callback for Samsung TV compatibility
+			// Only update artwork - preserve all other metadata
 			let artwork = MPMediaItemArtwork(boundsSize: artworkImage.size) { _ in
 				return artworkImage
 			}
-			
-			// Only update artwork - preserve all other metadata
 			nowPlayingInfo[MPMediaItemPropertyArtwork] = artwork
 			
 			// Apply updated info
@@ -1972,13 +1858,53 @@ class AudioPro: RCTEventEmitter {
 		}
 	}
 
-	/// Simple resize to Samsung TV optimal size with customizable target size
-	private func resizeImageForSamsungTV(_ image: UIImage, targetSize: CGSize = CGSize(width: 600, height: 600)) -> UIImage {
+	/// Simple resize to Samsung TV optimal size (600x600)
+	private func resizeImageForSamsungTV(_ image: UIImage) -> UIImage {
+		let targetSize = CGSize(width: 600, height: 600)
+		
 		UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
 		image.draw(in: CGRect(origin: .zero, size: targetSize))
 		let resizedImage = UIGraphicsGetImageFromCurrentImageContext() ?? image
 		UIGraphicsEndImageContext()
 		
 		return resizedImage
+	}
+
+	/// Creates a guaranteed hardcoded image for AirPlay compatibility
+	/// This ensures we ALWAYS have artwork, preventing loading spinners
+	private func createHardcodedArtwork() -> UIImage {
+		// Create a 600x600 solid color image with text overlay
+		let size = CGSize(width: 600, height: 600)
+		let renderer = UIGraphicsImageRenderer(size: size)
+		
+		let image = renderer.image { context in
+			// Set background color (dark blue)
+			UIColor(red: 0.1, green: 0.1, blue: 0.3, alpha: 1.0).setFill()
+			context.fill(CGRect(origin: .zero, size: size))
+			
+			                        // Add border
+                        UIColor(red: 0.2, green: 0.2, blue: 0.5, alpha: 1.0).setStroke()
+                        context.cgContext.setLineWidth(4)
+                        context.cgContext.stroke(CGRect(x: 10, y: 10, width: size.width - 20, height: size.height - 20))
+			
+					// Add text
+		let text = "🎵\nLive Radio"
+		
+		// Create paragraph style for center alignment
+		let paragraphStyle = NSMutableParagraphStyle()
+		paragraphStyle.alignment = .center
+		
+		let attributes: [NSAttributedString.Key: Any] = [
+			.font: UIFont.boldSystemFont(ofSize: 48),
+			.foregroundColor: UIColor.white,
+			.paragraphStyle: paragraphStyle
+		]
+		
+		let textRect = CGRect(x: 50, y: 250, width: size.width - 100, height: 100)
+		text.draw(in: textRect, withAttributes: attributes)
+		}
+		
+		log("[Hardcoded Artwork] Created 600x600 hardcoded image for AirPlay")
+		return image
 	}
 }
